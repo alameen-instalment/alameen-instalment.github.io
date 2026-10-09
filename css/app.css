@@ -149,3 +149,21 @@ details summary { cursor: pointer; color: var(--brand); font-weight: 600; paddin
 th small { display: block; font-weight: 400; font-size: 10px; }
 .loginerr { color: var(--bad); font-size: 13px; margin: 4px 0; }
 .loginerr small { display: block; color: var(--muted); font-size: 11px; word-break: break-all; }
+
+.chat { display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
+.msg { max-width: 88%; padding: 10px 12px; border-radius: 14px; line-height: 1.45; font-size: 14px; word-wrap: break-word; }
+.msg.user { align-self: flex-end; background: var(--brand); color: #fff; border-bottom-right-radius: 4px; }
+.msg.model { align-self: flex-start; background: #fff; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.thinking { color: var(--muted); font-style: italic; }
+.msg.err { align-self: stretch; background: #fde3e1; color: var(--bad); font-size: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip { font: inherit; font-size: 13px; padding: 8px 12px; border-radius: 99px; border: 1px solid #bcdccf; background: var(--brand-2); color: var(--brand); cursor: pointer; text-align: left; }
+.askbar { position: sticky; bottom: calc(64px + env(safe-area-inset-bottom)); display: flex; gap: 6px; align-items: flex-end; background: var(--bg); padding: 8px 0; }
+.askbar textarea { margin: 0; flex: 1; resize: none; min-height: 44px; max-height: 120px; }
+.iconround { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid #cfd6d2; background: #fff; font-size: 18px; cursor: pointer; }
+.iconround.send { background: var(--brand); color: #fff; border-color: var(--brand); }
+.iconround.on { background: var(--bad); color: #fff; border-color: var(--bad); animation: pulse 1s infinite; }
+.iconround:disabled { opacity: .5; }
+.langtog { flex: none; height: 44px; min-width: 34px; border-radius: 10px; border: 1px solid #cfd6d2; background: #fff; font: inherit; font-size: 13px; font-weight: 600; color: var(--brand); }
+@keyframes pulse { 50% { opacity: .6; } }
+#nav a { font-size: 10.5px; }

@@ -230,6 +230,18 @@ const ML = {
   'No internet connection': 'ഇന്റർനെറ്റ് കണക്ഷൻ ഇല്ല',
   'Too many tries. Wait a few minutes and try again.': 'വളരെയധികം ശ്രമങ്ങൾ. കുറച്ച് മിനിറ്റ് കാത്തിരുന്ന് വീണ്ടും ശ്രമിക്കുക.',
   'Login failed': 'ലോഗിൻ പരാജയപ്പെട്ടു',
+  'Ask': 'ചോദിക്കൂ',
+  'Ask the assistant': 'അസിസ്റ്റന്റിനോട് ചോദിക്കൂ',
+  'AI key not set. Admin → App settings.': 'AI കീ സെറ്റ് ചെയ്തിട്ടില്ല. അഡ്മിൻ → ആപ്പ് സെറ്റിങ്സ്.',
+  'No answer from AI': 'AI-യിൽ നിന്ന് മറുപടി കിട്ടിയില്ല',
+  'The question needed too many steps. Try asking more simply.': 'ചോദ്യം വളരെ സങ്കീർണ്ണമായി. കുറച്ചുകൂടി ലളിതമായി ചോദിക്കൂ.',
+  'Ask about customers, balances, collections, stock or reports. Answers use your live data.': 'കസ്റ്റമേഴ്സ്, ബാക്കി, കളക്ഷൻ, സ്റ്റോക്ക്, റിപ്പോർട്ട് എന്നിവയെക്കുറിച്ച് ചോദിക്കാം. നിങ്ങളുടെ ലൈവ് ഡാറ്റ നോക്കിയാണ് മറുപടി.',
+  'Checking your data…': 'ഡാറ്റ പരിശോധിക്കുന്നു…',
+  'Speak': 'സംസാരിക്കുക',
+  'Your question…': 'ചോദ്യം…',
+  'New conversation': 'പുതിയ സംഭാഷണം',
+  'Read-only. Customer data is sent to Google Gemini to answer.': 'വായിക്കാൻ മാത്രം. മറുപടിക്കായി കസ്റ്റമർ ഡാറ്റ Google Gemini-ലേക്ക് അയക്കും.',
+  'Voice input failed': 'ശബ്ദം തിരിച്ചറിയാനായില്ല',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();
