@@ -3,19 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f5c45">
+  <meta name="theme-color" content="#F3F5F2">
+  <script>
+    // Theme before first paint: auto (follow phone), light or dark — chosen per phone in Menu.
+    (function () {
+      var m = 'auto'; try { m = localStorage.getItem('theme') || 'auto'; } catch (e) {}
+      document.documentElement.setAttribute('data-theme', m);
+      var dark = m === 'dark' || (m === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.querySelector('meta[name=theme-color]').setAttribute('content', dark ? '#0E1412' : '#F3F5F2');
+    })();
+  </script>
   <title>Al Ameen Instalment</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;600&family=Inter:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+Malayalam:wght@400;600;700&display=swap">
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
   <header class="top">
     <button id="back" class="iconbtn" hidden aria-label="Back">‹</button>
     <h1 id="title">Al Ameen Instalment</h1>
+    <span class="sub" id="hsub"></span>
     <span class="offdot" title="Offline">●</span>
   </header>
   <main id="view"><div class="loading">…</div></main>

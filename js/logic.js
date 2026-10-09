@@ -114,12 +114,13 @@ export function buildLedger(openingBalance, sales, collections, returns) {
  * Report figures for one seller over a period.
  * Input arrays are already filtered to the date range.
  */
-export const PAY_MODES = ['cash', 'upi'];
-const modeOf = (x) => (x.mode === 'upi' ? 'upi' : 'cash');
+export const PAY_MODES = ['cash', 'upi', 'scrap'];
+// Scrap = material (old aluminium, steel, copper…) taken instead of money. It lowers the balance but is not cash.
+const modeOf = (x) => (x.mode === 'upi' || x.mode === 'scrap' ? x.mode : 'cash');
 const sumBy = (arr, m) => round2(arr.filter((x) => modeOf(x) === m).reduce((s, x) => s + x.amount, 0));
 
 /** Default payment mode for a customer: the one they used most (Cash on a tie or no history). */
-export function preferredMode(counts) {
+export function preferredMode(counts) { // scrap is never the default
   return (Number(counts?.upi) || 0) > (Number(counts?.cash) || 0) ? 'upi' : 'cash';
 }
 
@@ -137,28 +138,156 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   const realised = round2(collections.reduce((s, c) => s + (c.profit || 0), 0));
   const expense = round2(expenses.reduce((s, e) => s + e.amount, 0));
   const booked = round2(salesValue - salesCost - (returnValue - returnCost));
-  const collectedCash = sumBy(collections, 'cash'), collectedUpi = sumBy(collections, 'upi');
+  const collectedCash = sumBy(collections, 'cash'), collectedUpi = sumBy(collections, 'upi'), collectedScrap = sumBy(collections, 'scrap');
   const expenseCash = sumBy(expenses, 'cash'), expenseUpi = sumBy(expenses, 'upi');
   return {
-    salesValue, returnValue, collected, collectedCash, collectedUpi, booked, realised,
+    salesValue, returnValue, collected, collectedCash, collectedUpi, collectedScrap, booked, realised,
     expense, expenseCash, expenseUpi, cashInHand: round2(collectedCash - expenseCash),
     net: round2(realised - expense), salesCount: sales.length,
   };
 }
 
-export function companyReport(sellerReports, companyExpenses = [], scrapLosses = []) {
-  const sum = (k) => round2(sellerReports.reduce((s, r) => s + r[k], 0));
+/**
+ * Company totals. scrapLosses = damaged returned items written off (cost);
+ * scrapSales = bulk sales of scrap taken as payment: { received, credited } — the gain/loss is received − credited value.
+ */
+export function companyReport(sellerReports, companyExpenses = [], scrapLosses = [], scrapSales = []) {
+  const sum = (k) => round2(sellerReports.reduce((s, r) => s + (r[k] || 0), 0));
   const companyExpense = round2(companyExpenses.reduce((s, e) => s + e.amount, 0));
   const companyExpenseCash = sumBy(companyExpenses, 'cash'), companyExpenseUpi = sumBy(companyExpenses, 'upi');
-  const scrap = round2(scrapLosses.reduce((s, e) => s + e.amount, 0));
+  const scrap = round2(scrapLosses.reduce((s, e) => s + e.amount, 0)); // damage loss
+  const scrapSold = round2(scrapSales.reduce((s, e) => s + (Number(e.received) || 0), 0));
+  const scrapSoldCredited = round2(scrapSales.reduce((s, e) => s + (Number(e.credited) || 0), 0));
+  const scrapGain = round2(scrapSold - scrapSoldCredited);
+  const scrapSoldCash = round2(scrapSales.filter((e) => e.mode !== 'upi').reduce((s, e) => s + (Number(e.received) || 0), 0));
   const realised = sum('realised');
   const personal = sum('expense');
   return {
-    salesValue: sum('salesValue'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'),
+    salesValue: sum('salesValue'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'),
     booked: sum('booked'), realised, personalExpense: personal, companyExpense, companyExpenseCash, companyExpenseUpi, scrap,
-    cashInHand: round2(sum('cashInHand') - companyExpenseCash),
-    net: round2(realised - personal - companyExpense - scrap),
+    scrapSold, scrapSoldCredited, scrapGain,
+    cashInHand: round2(sum('cashInHand') - companyExpenseCash + scrapSoldCash),
+    net: round2(realised - personal - companyExpense - scrap + scrapGain),
   };
+}
+
+/** Scrap on hand by type: everything taken as payment minus what was sold. */
+export function scrapStock(scrapIn = [], scrapSales = []) {
+  const by = {};
+  for (const d of scrapIn) for (const i of d.items || []) by[i.type] = round2((by[i.type] || 0) + (Number(i.value) || 0));
+  for (const d of scrapSales) for (const i of d.items || []) by[i.type] = round2((by[i.type] || 0) - (Number(i.value) || 0));
+  return by;
+}
+
+/** Sales and booked profit per stock category. catOf(line) gives the category of a sale line. */
+export function categoryReport(sales = [], returns = [], catOf = (l) => l.category || 'Others') {
+  const out = {};
+  const row = (c) => (out[c] ||= { qty: 0, value: 0, cost: 0, profit: 0 });
+  for (const s of sales) for (const l of s.items || []) {
+    const r = row(catOf(l)), q = Number(l.qty) || 0;
+    r.qty += q; r.value = round2(r.value + q * (Number(l.price) || 0)); r.cost = round2(r.cost + q * (Number(l.unitCost) || 0));
+  }
+  for (const rt of returns) if (rt.credited) for (const l of rt.items || []) {
+    const r = row(catOf(l)), q = Number(l.qty) || 0;
+    r.qty -= q; r.value = round2(r.value - q * (Number(l.price) || 0)); r.cost = round2(r.cost - q * (Number(l.unitCost) || 0));
+  }
+  for (const r of Object.values(out)) r.profit = round2(r.value - r.cost);
+  return out;
+}
+
+/**
+ * Rebuild an account from its entries in the order they were made (used when a sale is voided).
+ * opening: { amount, ratio }. Returns { queue, balance, collections: [{id, allocations, profit}] }.
+ */
+export function replayAccount({ opening = null, sales = [], collections = [], returns = [] }) {
+  const ev = [
+    ...sales.map((x) => ({ k: 0, at: x.createdAt || 0, x })),
+    ...collections.map((x) => ({ k: x.kind === 'advance' ? 1 : 2, at: x.createdAt || 0, x })),
+    ...returns.filter((r) => r.credited).map((x) => ({ k: 3, at: x.createdAt || 0, x })),
+  ].sort((a, b) => a.at - b.at || a.k - b.k);
+  let queue = opening && opening.amount > 0 ? [{ ref: 'opening', date: '0000-00-00', seq: 0, remaining: round2(opening.amount), ratio: opening.ratio }] : [];
+  let balance = round2(opening?.amount || 0);
+  const credited = {}, outCols = [];
+  const saleOf = Object.fromEntries(sales.map((s) => [s.id, s]));
+  for (const { k, x } of ev) {
+    if (k === 0) { queue = addSaleToQueue(queue, x.id, x.date, x.saleValue, x.cost); balance = round2(balance + x.saleValue); }
+    else if (k === 3) {
+      const s = saleOf[x.saleId];
+      const c = (credited[x.saleId] ||= { v: 0, c: 0 });
+      c.v = round2(c.v + x.amount); c.c = round2(c.c + (x.cost || 0));
+      if (s) queue = creditReturn(queue, s.id, x.amount, s.saleValue - c.v, s.cost - c.c);
+      balance = round2(balance - x.amount);
+    } else {
+      const r = allocate(queue, x.amount, k === 1 && x.saleId && queue.some((i) => i.ref === x.saleId) ? x.saleId : null);
+      queue = r.queue; balance = round2(balance - x.amount);
+      outCols.push({ id: x.id, allocations: r.allocations, profit: r.profit });
+    }
+  }
+  return { queue, balance, collections: outCols };
+}
+
+/**
+ * Void one sale with the least change: drop it from the queue and move only the money other collections
+ * had paid toward it onto the remaining items (oldest first). Other collections and past profits are untouched.
+ * collections: the account's collections except the sale's own advance, oldest first.
+ * Returns { queue, collections: [{id, allocations, profit}] } (only the changed collections).
+ */
+export function voidFromQueue(queue, saleId, collections = []) {
+  let q = queue.filter((i) => i.ref !== saleId).map((i) => ({ ...i }));
+  const changed = [];
+  for (const c of [...collections].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))) {
+    const onSale = (c.allocations || []).filter((a) => a.ref === saleId);
+    if (!onSale.length) continue;
+    const amt = round2(onSale.reduce((s, a) => s + a.amount, 0));
+    const allocs = (c.allocations || []).filter((a) => a.ref !== saleId).map((a) => ({ ...a }));
+    const r = allocate(q, amt);
+    q = r.queue;
+    for (const a of r.allocations) {
+      const ex = allocs.find((x) => x.ref === a.ref);
+      if (ex) { ex.amount = round2(ex.amount + a.amount); ex.profit = round2(ex.profit + a.profit); } else allocs.push({ ...a });
+    }
+    changed.push({ id: c.id, allocations: allocs, profit: round2(allocs.reduce((s, a) => s + a.profit, 0)) });
+  }
+  return { queue: q, collections: changed };
+}
+
+/** Open amount still due in a queue (used to spot a queue that no longer matches the balance). */
+export const queueDue = (queue = []) => round2(queue.reduce((s, i) => s + Math.max(0, i.remaining || 0), 0));
+
+/** Next date after `from` that falls on one of the route weekdays (or the next day if none set). */
+export function nextRouteDate(days, from) {
+  for (let i = 1; i <= 7; i++) {
+    const d = addDays(from, i);
+    if (!days?.length || days.includes(new Date(d + 'T00:00:00Z').getUTCDay())) return d;
+  }
+  return addDays(from, 1);
+}
+
+export const weekdayOf = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
+
+/** Stable document id for an item name (catalog groups stock lots with the same name). */
+export function nameKey(name) {
+  const s = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  let h = 5381;
+  for (const ch of s) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
+  const slug = s.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
+  return (slug ? slug + '-' : 'n-') + h.toString(36);
+}
+
+/** Pending orders vs stock: what has to be bought. demand: [{items:[{name, qty}], deliveryDate}] */
+export function toBuy(demand = [], stock = []) {
+  const want = {};
+  for (const d of demand) for (const i of d.items || []) {
+    const k = String(i.name || '').trim().toLowerCase();
+    if (!k) continue;
+    const w = (want[k] ||= { name: String(i.name).trim(), qty: 0, first: d.deliveryDate || '' });
+    w.qty += Number(i.qty) || 0;
+    if (d.deliveryDate && (!w.first || d.deliveryDate < w.first)) w.first = d.deliveryDate;
+  }
+  const have = {};
+  for (const s of stock) { const k = String(s.name || '').trim().toLowerCase(); have[k] = (have[k] || 0) + Math.max(0, Number(s.qty) || 0); }
+  return Object.entries(want).map(([k, w]) => ({ ...w, inStock: have[k] || 0, need: Math.max(0, w.qty - (have[k] || 0)) }))
+    .sort((a, b) => b.need - a.need || (a.first < b.first ? -1 : 1));
 }
 
 /** Shift a YYYY-MM-DD date by n days. */
@@ -233,5 +362,35 @@ export function orderFromTimes(entries, day, currentIds, tzOffsetMin = 330) {
   const timed = currentIds.filter((id) => mins[id]).sort((a, b) => median(mins[a]) - median(mins[b]));
   const out = [...timed, ...currentIds.filter((id) => !mins[id])];
   out.timed = timed.length; // how many customers had usable times
+  return out;
+}
+
+/**
+ * Which route days to visit on a date, after holiday decisions.
+ * routeChanges: { 'YYYY-MM-DD': { date, day, action: 'move' | 'cancel' | 'keep', toDate } } keyed by the event date.
+ * Returns { days: [{ day, moved, from }], change } — change is set when that date's own route was moved or cancelled.
+ */
+export function dayPlan(date, routeChanges = {}, routeDays = [1, 2, 3, 6, 0]) {
+  const wd = weekdayOf(date), out = { days: [], change: null };
+  const rc = routeChanges[date];
+  if (routeDays.includes(wd)) { if (rc && rc.action !== 'keep') out.change = rc; else out.days.push({ day: wd, moved: false }); }
+  for (const r of Object.values(routeChanges)) {
+    if (r.action === 'move' && r.toDate === date && !out.days.some((d) => d.day === r.day)) out.days.push({ day: r.day, moved: true, from: r.date });
+  }
+  return out;
+}
+
+/**
+ * Holidays/events in the next `ahead` days that fall on a route day with customers and are not yet decided.
+ * events: [{ date, name }]; busyDays: weekdays that have customers.
+ */
+export function routeAlerts(today, events, routeChanges = {}, busyDays = [], ahead = 2, routeDays = [1, 2, 3, 6, 0]) {
+  const out = [];
+  for (let i = 0; i <= ahead; i++) {
+    const d = addDays(today, i), wd = weekdayOf(d);
+    if (!routeDays.includes(wd) || !busyDays.includes(wd) || routeChanges[d]) continue;
+    const names = events.filter((e) => e.date === d).map((e) => e.name);
+    if (names.length) out.push({ date: d, day: wd, names });
+  }
   return out;
 }

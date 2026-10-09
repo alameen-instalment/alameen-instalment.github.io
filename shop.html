@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F3F5F2">
+  <title>Al Ameen Instalment — Shop</title>
+  <meta name="description" content="Items available on instalment">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+Malayalam:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="css/app.css">
+  <script>document.documentElement.setAttribute('data-theme', 'auto');</script>
+  <style>body { padding-bottom: 24px; } .shophead { display: flex; align-items: center; gap: 8px; } .shophead h1 { flex: 1; } #lang { width: auto; }</style>
+</head>
+<body>
+  <header class="top shophead"><h1>Al Ameen Instalment</h1><button id="lang" class="btn small"></button></header>
+  <main>
+    <div class="muted small" id="who" style="margin-bottom:8px"></div>
+    <input id="q" type="search" style="margin-bottom:8px">
+    <div class="fchips" id="cats"></div>
+    <div class="shopgrid" id="grid"><div class="loading">…</div></div>
+  </main>
+  <script type="module" src="js/shop.js"></script>
+</body>
+</html>

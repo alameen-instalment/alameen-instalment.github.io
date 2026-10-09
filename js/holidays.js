@@ -1,0 +1,30 @@
+// Kerala Government public holidays, 2026 (official list; * = depends on the moon, date may shift by a day).
+// Holidays that fall on a Sunday are kept because the route still runs on Sundays.
+// 2027: add here when the Government publishes the list, or the admin can add them in the calendar.
+export const KERALA_HOLIDAYS = [
+  ['2026-01-02', 'Mannam Jayanthi', 'മന്നം ജയന്തി'],
+  ['2026-01-26', 'Republic Day', 'റിപ്പബ്ലിക് ദിനം'],
+  ['2026-02-15', 'Mahasivarathri', 'ശിവരാത്രി'],
+  ['2026-03-20', 'Id-ul-Fitr (Ramzan)*', 'ചെറിയ പെരുന്നാൾ*'],
+  ['2026-04-02', 'Maundy Thursday', 'പെസഹ വ്യാഴം'],
+  ['2026-04-03', 'Good Friday', 'ദുഃഖവെള്ളി'],
+  ['2026-04-05', 'Easter', 'ഈസ്റ്റർ'],
+  ['2026-04-14', 'Dr B.R. Ambedkar Jayanthi', 'അംബേദ്കർ ജയന്തി'],
+  ['2026-04-15', 'Vishu', 'വിഷു'],
+  ['2026-05-01', 'May Day', 'മേയ് ദിനം'],
+  ['2026-05-27', 'Id-ul-Adha (Bakrid)*', 'ബലിപെരുന്നാൾ*'],
+  ['2026-06-25', 'Muharram', 'മുഹറം'],
+  ['2026-08-12', 'Karkidaka Vavu', 'കർക്കടക വാവ്'],
+  ['2026-08-15', 'Independence Day', 'സ്വാതന്ത്ര്യ ദിനം'],
+  ['2026-08-25', 'First Onam / Milad-i-Sherif*', 'ഒന്നാം ഓണം / നബിദിനം*'],
+  ['2026-08-26', 'Thiruvonam', 'തിരുവോണം'],
+  ['2026-08-27', 'Third Onam', 'മൂന്നാം ഓണം'],
+  ['2026-08-28', 'Fourth Onam / Sreenarayana Guru Jayanthi', 'നാലാം ഓണം / ശ്രീനാരായണ ഗുരു ജയന്തി'],
+  ['2026-09-04', 'Sreekrishna Jayanthi', 'ശ്രീകൃഷ്ണ ജയന്തി'],
+  ['2026-09-21', 'Sreenarayana Guru Samadhi', 'ശ്രീനാരായണ ഗുരു സമാധി'],
+  ['2026-10-02', 'Gandhi Jayanthi', 'ഗാന്ധി ജയന്തി'],
+  ['2026-10-20', 'Mahanavami', 'മഹാനവമി'],
+  ['2026-10-21', 'Vijayadasami', 'വിജയദശമി'],
+  ['2026-11-08', 'Deepavali', 'ദീപാവലി'],
+  ['2026-12-25', 'Christmas', 'ക്രിസ്മസ്'],
+].map(([date, en, ml]) => ({ date, en, ml, holiday: true, builtin: true }));

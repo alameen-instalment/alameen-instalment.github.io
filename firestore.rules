@@ -7,9 +7,10 @@ service cloud.firestore {
       return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && profile().active == true;
     }
     function isAdmin() { return isUser() && profile().role == 'admin'; }
+    function ownKey(k) { return isUser() && (profile().get('sellerKey', request.auth.uid) == k || isAdmin()); }
 
     match /users/{uid} {
-      allow read: if signedIn();
+      allow read: if isUser() || (signedIn() && request.auth.uid == uid);
       // First admin login creates its own profile; after that only the admin manages users.
       allow create: if (signedIn() && request.auth.uid == uid
                         && request.auth.token.email == 'admin@alameen-instalment.app'
@@ -26,7 +27,25 @@ service cloud.firestore {
     match /companyExpenses/{id} { allow read, write: if isAdmin(); }
     match /auditLog/{id}        { allow create: if isUser(); allow read: if isAdmin(); }
 
-    // Each seller's customers, accounts, sales, collections, returns, notes and expenses.
+    // Customer catalog: public (no login) can read only items marked show, and photos. Never contains cost.
+    match /catalog/{id} {
+      allow read: if resource.data.show == true || isUser();
+      allow create, delete: if isAdmin();
+      // Any phone may refresh Available/price after stock changes; everything else is admin only.
+      allow update: if isAdmin() || (isUser() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['available', 'price']));
+    }
+    match /catalogPhotos/{id}   { allow read: if true; allow write: if isAdmin(); }
+    // Seller name + WhatsApp number for the shop link (public).
+    match /shopSellers/{key}    { allow read: if true; allow write: if ownKey(key); }
+    // Pending orders without customer details, for the shared "to buy" list.
+    match /demand/{id}          { allow read: if isUser(); allow create, update: if ownKey(request.resource.data.sellerKey); allow delete: if isUser(); }
+    // Scrap taken as payment (one doc per collection) and bulk scrap sales.
+    match /scrapIn/{id}         { allow create: if ownKey(request.resource.data.sellerKey); allow delete: if isUser(); allow read, update: if isAdmin(); }
+    match /scrapSales/{id}      { allow read, write: if isAdmin(); }
+    // General calendar events and holidays added by the admin.
+    match /events/{id}          { allow read: if isUser(); allow write: if isAdmin(); }
+
+    // Each seller's customers, accounts, sales, collections, returns, notes, expenses, visits, orders, route changes and day closings.
     match /sellers/{sid}/{coll}/{docId} {
       allow read, write: if isUser() && (profile().get('sellerKey', request.auth.uid) == sid || isAdmin());
     }
