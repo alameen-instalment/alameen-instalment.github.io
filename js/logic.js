@@ -197,3 +197,41 @@ export function todayStr(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+
+/**
+ * Route order for one weekday.
+ * customers: [{id, lane, house, name, routeOrder: {<day>: n}}]
+ * Customers with a saved position come first in that order; the rest follow by lane, then house number, then name.
+ */
+export function routeSort(customers, day) {
+  const pos = (c) => Number(c.routeOrder?.[day]) || 0;
+  const laneCmp = (a, b) => (a.lane || '￿').localeCompare(b.lane || '￿', 'en', { sensitivity: 'base' });
+  const houseCmp = (a, b) => String(a.house || '').localeCompare(String(b.house || ''), 'en', { numeric: true, sensitivity: 'base' });
+  return [...customers].sort((a, b) => {
+    const pa = pos(a), pb = pos(b);
+    if (pa && pb) return pa - pb;
+    if (pa || pb) return pa ? -1 : 1;
+    return laneCmp(a, b) || houseCmp(a, b) || String(a.name).localeCompare(String(b.name));
+  });
+}
+
+/**
+ * Suggested visiting order from past collection entry times on that weekday.
+ * entries: [{customerId, date: 'YYYY-MM-DD', createdAt: ms}]; only entries made on their own date count
+ * (back-dated entries say nothing about the time of the visit).
+ * Returns customer ids: those with history by median minute of day, then the rest in their current order.
+ */
+export function orderFromTimes(entries, day, currentIds, tzOffsetMin = 330) {
+  const mins = {};
+  for (const e of entries) {
+    if (!e.createdAt || !e.date) continue;
+    const local = new Date(e.createdAt + tzOffsetMin * 60000);
+    if (local.toISOString().slice(0, 10) !== e.date || local.getUTCDay() !== day) continue;
+    (mins[e.customerId] ||= []).push(local.getUTCHours() * 60 + local.getUTCMinutes());
+  }
+  const median = (a) => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const timed = currentIds.filter((id) => mins[id]).sort((a, b) => median(mins[a]) - median(mins[b]));
+  const out = [...timed, ...currentIds.filter((id) => !mins[id])];
+  out.timed = timed.length; // how many customers had usable times
+  return out;
+}

@@ -312,8 +312,11 @@ function renderCustomers() {
     paidToday = new Set(cols.map((c) => c.customerId));
     draw();
   };
+  let arranging = null; // array of customer ids while arranging the route order
+  const dayOfFilter = () => (filter === 'today' ? todayDay() : Number(filter));
   const matches = (c, f) => f === 'all' ? true : f === 'none' ? !daysOf(c).length : daysOf(c).includes(f === 'today' ? todayDay() : Number(f));
   const draw = () => {
+    if (arranging) return;
     const all = Object.values(S.customers);
     const isRoute = ROUTE_DAYS.includes(todayDay());
     if (filter === 'today' && !isRoute) filter = 'all';
@@ -325,16 +328,17 @@ function renderCustomers() {
     const list = all.filter((c) => matches(c, filter))
       .filter((c) => searchHit(c, qv));
     const byRoute = filter !== 'all' && filter !== 'none';
-    list.sort(byRoute ? (a, b) => (a.lane || '\uffff').localeCompare(b.lane || '\uffff', 'en', { sensitivity: 'base' }) || houseCmp(a, b) || a.name.localeCompare(b.name)
-      : (a, b) => a.name.localeCompare(b.name));
-    let lastLane = null;
-    $('#clist').innerHTML = list.map((c) => {
+    const sorted = byRoute ? L.routeSort(list, dayOfFilter()) : list.sort((a, b) => a.name.localeCompare(b.name));
+    $('#arrBar').hidden = !byRoute || !!qv;
+    let lastLane = null, n = 0;
+    $('#clist').innerHTML = sorted.map((c) => {
+      n++;
       const lane = (c.lane || '').trim(), head = byRoute && lane.toLowerCase() !== lastLane ? `<li class="lanehead">${esc(lane || t('No lane'))}</li>` : '';
       lastLane = lane.toLowerCase();
       const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), paid = paidToday.has(c.id);
       const days = daysOf(c).map(dayLabel).join(' ');
       return `${head}<li><a href="#/customer/${c.id}" class="row ${paid ? 'paid' : ''}">
-        <div>${placeBadge(c)}<b>${paid ? '<span class="tick">✓</span> ' : ''}${esc(c.name)}</b><small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+        <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : ''}${esc(c.name)}</b><small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
         <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
     const due = list.reduce((s, c) => s + openBalance(c.id), 0), seen = list.filter((c) => paidToday.has(c.id)).length;
@@ -344,9 +348,66 @@ function renderCustomers() {
     <div class="fchips" id="dayf"></div>
     <div class="toolbar"><input id="q" type="search" placeholder="${t('Search name, phone, lane')}"><a class="btn primary" href="#/customer-new">+ ${t('Add')}</a></div>
     <div class="muted small" id="ctotal"></div>
-    <ul class="list" id="clist"></ul>`;
+    <div class="arrbar" id="arrBar" hidden><button class="btn small" id="arrBtn">↕ ${t('Arrange order')}</button><button class="btn small" id="autoBtn">⏱ ${t('Order by collection times')}</button></div>
+    <ul class="list" id="clist"></ul>
+    <div class="arrsave" id="arrSave" hidden><button class="btn" id="arrCancel">${t('Cancel')}</button><button class="btn primary" id="arrOk">${t('Save order')}</button></div>`;
   bindSellerBar();
   $('#q').oninput = draw;
+
+  const startArrange = (ids, note) => {
+    arranging = ids;
+    const day = dayOfFilter();
+    $('#dayf').classList.add('locked'); $('#q').disabled = true; $('#arrBar').hidden = true; $('#arrSave').hidden = false;
+    $('#ctotal').textContent = note || t('Drag ≡ to put customers in the order you visit them.');
+    $('#clist').innerHTML = ids.map((id, i) => { const c = S.customers[id]; return `<li class="arr" data-id="${id}"><span class="handle" aria-label="drag">≡</span><span class="seq">${i + 1}</span>
+      <div>${placeBadge(c)}<b>${esc(c.name)}</b></div></li>`; }).join('');
+    const renumber = () => $$('#clist .seq').forEach((el, i) => (el.textContent = i + 1));
+    $$('#clist .handle').forEach((h) => {
+      h.onpointerdown = (e) => {
+        e.preventDefault();
+        const li = h.closest('li'), pid = e.pointerId; li.classList.add('dragging');
+        let scrollTimer = null;
+        const move = (ev) => {
+          const y = ev.clientY;
+          clearInterval(scrollTimer);
+          if (y < 90) scrollTimer = setInterval(() => window.scrollBy(0, -12), 16);
+          else if (y > window.innerHeight - 140) scrollTimer = setInterval(() => window.scrollBy(0, 12), 16);
+          const others = $$('#clist li.arr').filter((x) => x !== li);
+          const before = others.find((x) => { const r = x.getBoundingClientRect(); return y < r.top + r.height / 2; });
+          if (before) { if (li.nextElementSibling !== before) $('#clist').insertBefore(li, before); } else $('#clist').appendChild(li);
+        };
+        // Listen on window: moving the row in the DOM would drop pointer capture on the handle.
+        const onMove = (ev) => { if (ev.pointerId === pid) { ev.preventDefault(); move(ev); } };
+        const up = (ev) => {
+          if (ev.pointerId !== pid) return;
+          clearInterval(scrollTimer); li.classList.remove('dragging'); renumber();
+          window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+        };
+        window.addEventListener('pointermove', onMove, { passive: false }); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+      };
+    });
+    $('#arrCancel').onclick = endArrange;
+    $('#arrOk').onclick = () => {
+      const order = $$('#clist li.arr').map((li) => li.dataset.id), b = F.writeBatch(F.db);
+      order.forEach((id, i) => b.update(F.sellerDoc(sid, 'customers', id), { [`routeOrder.${day}`]: i + 1 }));
+      F.audit(b, S.user.uid, 'route-order', `sellers/${sid}/day/${day}`, null, { day, order });
+      F.commit(b, onWriteError);
+      order.forEach((id, i) => { const c = S.customers[id]; c.routeOrder = { ...(c.routeOrder || {}), [day]: i + 1 }; });
+      toast(t('Route order saved')); endArrange();
+    };
+  };
+  const endArrange = () => {
+    arranging = null; $('#dayf').classList.remove('locked'); $('#q').disabled = false; $('#arrSave').hidden = true; draw();
+  };
+  const currentIds = () => L.routeSort(Object.values(S.customers).filter((c) => matches(c, filter)), dayOfFilter()).map((c) => c.id);
+  $('#arrBtn').onclick = () => startArrange(currentIds());
+  $('#autoBtn').onclick = async () => {
+    const from = L.addDays(today(), -90);
+    const cols = await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '>=', from)));
+    const ids = currentIds(), ordered = L.orderFromTimes(cols, dayOfFilter(), ids);
+    if (!ordered.timed) return toast(t('No collection times yet for this day. Use the app on this route for a week or two first.'), true);
+    startArrange([...ordered], `${t('Suggested from collection times. Check it, adjust by dragging, then save.')} (${ordered.timed}/${ids.length})`);
+  };
   draw();
   loadPaid();
   S.refresh = draw;
@@ -447,6 +508,10 @@ async function renderCustomer(cid) {
         <div class="row"><div><b>${esc(c.name)}</b><small>${esc(c.address || '')}</small>${daysOf(c).length ? `<small>${t('Route day')}: ${daysOf(c).map(dayLabel).join(', ')}</small>` : ''}</div>
         <a class="btn small" href="#/customer-edit/${cid}">${t('Edit')}</a></div>
         ${contactButtons(c.phone)}
+        <div class="contact">
+          ${c.geo ? `<a class="btn" href="https://www.google.com/maps/dir/?api=1&destination=${c.geo.lat},${c.geo.lng}" target="_blank" rel="noopener">🗺️ ${t('Directions')}</a>` : ''}
+          <button class="btn" id="geoBtn">📍 ${c.geo ? t('Update location') : t('Save location')}</button></div>
+        ${c.geo ? `<small class="muted">${t('Location saved')} ${fmtDate(c.geo.date)} · ±${Math.round(c.geo.acc)} m</small>` : ''}
         ${phonesOf(c).length > 1 || phonesOf(c)[0]?.label ? `<ul class="phonelist">${phonesOf(c).map((p) => `<li>${p.primary ? '<span class="star on">★</span>' : '<span class="star">☆</span>'}
           <span>${esc(p.label || '')}</span><b>${esc(p.number)}</b><a class="btn small" href="tel:${esc(p.number)}">📞</a></li>`).join('')}</ul>` : ''}
         ${(c.addressHistory || []).length ? `<details><summary>${t('Old addresses')}</summary>${c.addressHistory.map((h) => `<div class="small">${esc(h.address)} <span class="muted">(${t('until')} ${fmtDate(h.until)})</span></div>`).join('')}</details>` : ''}
@@ -464,6 +529,17 @@ async function renderCustomer(cid) {
         <button class="btn" type="submit">${t('Save note')}</button></form>
       <ul class="list">${notes.map((n) => `<li class="note ${n.done ? 'done' : ''}"><div>${esc(n.text)}</div>
         <small class="muted">${fmtDate(n.date)}${n.dueDate ? ' · ' + t('Remind') + ' ' + fmtDate(n.dueDate) : ''}${n.done ? ' · ' + t('Done') : ''}</small></li>`).join('')}</ul>`;
+    $('#geoBtn').onclick = () => {
+      if (!navigator.geolocation) return toast(t('Location is not available on this phone'), true);
+      if (c.geo && !confirm(t('Replace the saved location with where you are now?'))) return;
+      const btn = $('#geoBtn'); btn.disabled = true; btn.textContent = t('Getting location…');
+      navigator.geolocation.getCurrentPosition((pos) => {
+        const geo = { lat: +pos.coords.latitude.toFixed(6), lng: +pos.coords.longitude.toFixed(6), acc: pos.coords.accuracy, date: today(), by: S.user.uid };
+        const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'customers', cid), { geo }); F.commit(b, onWriteError);
+        c.geo = geo; toast(`${t('Location saved')} (±${Math.round(geo.acc)} m)`); draw();
+      }, (err) => { btn.disabled = false; btn.textContent = '📍 ' + t('Save location'); toast(t('Could not get location') + ': ' + err.message, true); },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    };
     $('#af').onsubmit = (e) => {
       e.preventDefault();
       const row = e.target, acol = F.sellerCol(sid, 'accounts'), b = F.writeBatch(F.db);
@@ -1235,7 +1311,7 @@ async function renderBackup() {
       const cname = Object.fromEntries(per.customers.map((c) => [c.id, c.name]));
       const aname = Object.fromEntries(per.accounts.map((a) => [a.id, a.name]));
       const when = (ms) => (ms ? new Date(ms).toLocaleString('en-IN') : '');
-      add('Customers', per.customers.map((c) => ({ seller: c.seller, id: c.id, name: c.name, houseNo: c.house || '', lane: c.lane || '', phone: c.phone, otherPhones: phonesOf(c).filter((p) => !p.primary).map((p) => `${p.label} ${p.number}`.trim()).join('; '), address: c.address, routeDays: daysOf(c).map((x) => DAY_KEYS[x]).join(' '), oldAddresses: (c.addressHistory || []).map((h) => `${h.address} (till ${h.until})`).join('; '), cashCount: c.modeCounts?.cash || 0, upiCount: c.modeCounts?.upi || 0 })));
+      add('Customers', per.customers.map((c) => ({ seller: c.seller, id: c.id, name: c.name, houseNo: c.house || '', lane: c.lane || '', phone: c.phone, otherPhones: phonesOf(c).filter((p) => !p.primary).map((p) => `${p.label} ${p.number}`.trim()).join('; '), address: c.address, routeDays: daysOf(c).map((x) => DAY_KEYS[x]).join(' '), lat: c.geo?.lat ?? '', lng: c.geo?.lng ?? '', oldAddresses: (c.addressHistory || []).map((h) => `${h.address} (till ${h.until})`).join('; '), cashCount: c.modeCounts?.cash || 0, upiCount: c.modeCounts?.upi || 0 })));
       add('Accounts', per.accounts.map((a) => ({ seller: a.seller, id: a.id, customer: cname[a.customerId], customerId: a.customerId, account: a.name, frequency: a.frequency, openingBalance: a.openingBalance, balance: a.balance, status: a.status })));
       add('Sales', per.sales.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], account: aname[x.accountId], items: items(x.items), saleValue: x.saleValue, cost: x.cost, advance: x.advance, returnedValue: x.creditedValue || 0, id: x.id })));
       add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
@@ -1312,7 +1388,7 @@ const ASK_TOOLS = {
       let list = d.customers.filter((c) => searchHit(c, q))
         .filter((c) => !day ? true : day === 'none' ? !daysOf(c).length : daysOf(c).includes(Number(dayNum))).map((c) => {
         const accs = d.accounts.filter((a) => a.customerId === c.id);
-        return { customer_id: c.id, name: c.name, houseNo: c.house || '', lane: c.lane || '', phone: c.phone || '', otherPhones: phonesOf(c).filter((p) => !p.primary).map((p) => `${p.label} ${p.number}`.trim()), address: c.address || '', seller: c.seller, routeDays: daysOf(c).map((x) => DAY_KEYS[x]),
+        return { customer_id: c.id, name: c.name, houseNo: c.house || '', lane: c.lane || '', phone: c.phone || '', otherPhones: phonesOf(c).filter((p) => !p.primary).map((p) => `${p.label} ${p.number}`.trim()), address: c.address || '', seller: c.seller, routeDays: daysOf(c).map((x) => DAY_KEYS[x]), hasLocation: !!c.geo,
           paidToday: accs.some((a) => d.lastPay[a.id] === now),
           totalDue: L.round2(accs.filter((a) => a.status !== 'closed').reduce((s, a) => s + (a.balance || 0), 0)), accounts: accs.map((a) => acctInfo(a, d)) };
       });

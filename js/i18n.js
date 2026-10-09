@@ -258,6 +258,22 @@ const ML = {
   'Self': 'സ്വന്തം', 'Husband': 'ഭർത്താവ്', 'Wife': 'ഭാര്യ', 'Son': 'മകൻ', 'Daughter': 'മകൾ', 'Neighbour': 'അയൽവാസി',
   'Home phone': 'വീട്ടിലെ ഫോൺ',
   'Search name, phone, lane': 'പേര്, ഫോൺ, ലെയിൻ തിരയുക',
+  'Arrange order': 'ക്രമം മാറ്റുക',
+  'Order by collection times': 'കളക്ഷൻ സമയം വെച്ച് ക്രമം',
+  'Cancel': 'റദ്ദാക്കുക',
+  'Save order': 'ക്രമം സേവ് ചെയ്യുക',
+  'Drag ≡ to put customers in the order you visit them.': 'പോകുന്ന ക്രമത്തിൽ ആക്കാൻ ≡ പിടിച്ച് വലിച്ചിടുക.',
+  'Route order saved': 'റൂട്ട് ക്രമം സേവ് ചെയ്തു',
+  'No collection times yet for this day. Use the app on this route for a week or two first.': 'ഈ ദിവസത്തിന് കളക്ഷൻ സമയങ്ങൾ ഇതുവരെ ഇല്ല. ഈ റൂട്ടിൽ ഒന്നോ രണ്ടോ ആഴ്ച ആപ്പ് ഉപയോഗിച്ച ശേഷം ശ്രമിക്കുക.',
+  'Suggested from collection times. Check it, adjust by dragging, then save.': 'കളക്ഷൻ സമയം വെച്ചുള്ള നിർദ്ദേശം. പരിശോധിച്ച്, വേണമെങ്കിൽ വലിച്ചിട്ട് മാറ്റി, സേവ് ചെയ്യുക.',
+  'Directions': 'വഴി കാണിക്കുക',
+  'Save location': 'ലൊക്കേഷൻ സേവ് ചെയ്യുക',
+  'Update location': 'ലൊക്കേഷൻ മാറ്റുക',
+  'Location saved': 'ലൊക്കേഷൻ സേവ് ചെയ്തു',
+  'Location is not available on this phone': 'ഈ ഫോണിൽ ലൊക്കേഷൻ ലഭ്യമല്ല',
+  'Replace the saved location with where you are now?': 'സേവ് ചെയ്ത ലൊക്കേഷൻ മാറ്റി ഇപ്പോൾ നിൽക്കുന്ന സ്ഥലം വെക്കണോ?',
+  'Getting location…': 'ലൊക്കേഷൻ എടുക്കുന്നു…',
+  'Could not get location': 'ലൊക്കേഷൻ കിട്ടിയില്ല',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();
