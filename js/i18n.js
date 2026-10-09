@@ -484,6 +484,9 @@ const ML = {
   "Steel": "സ്റ്റീൽ",
   "Ottu": "ഓട്",
   "Copper": "ചെമ്പ്",
+  "No open account": "തുറന്ന അക്കൗണ്ട് ഇല്ല",
+  "Add an account first": "ആദ്യം ഒരു അക്കൗണ്ട് ചേർക്കുക",
+  "choose account": "അക്കൗണ്ട് തിരഞ്ഞെടുക്കുക",
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();

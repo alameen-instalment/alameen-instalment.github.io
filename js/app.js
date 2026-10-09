@@ -506,6 +506,32 @@ async function mountCalendar(el) {
   }));
 }
 
+// ---------- receipt bar (after a collection, on the screen the seller returns to) ----------
+function readReceipt() {
+  try { const r = JSON.parse(sessionStorage.getItem('receipt') || 'null'); return r && Date.now() - (r.at || 0) < 30 * 60000 ? r : null; } catch { return null; }
+}
+function receiptBar(float = false) {
+  const rc = readReceipt();
+  if (!rc) return '';
+  return `<div class="banner ${float ? 'float' : ''}" id="rcpt"><b>✓ ${t('Saved')} · ${esc(rc.customer || '')} · ${money(rc.amount)}</b><span class="small">${t('New balance')} ${money(rc.balance)}</span>
+    <div class="contact">${rc.phone ? `<a class="btn wa" id="rcSend" href="https://wa.me/${L.waNumber(rc.phone)}?text=${encodeURIComponent(rc.text)}" target="_blank" rel="noopener">📩 ${t('Send receipt')}</a>` : `<span class="small muted">${t('No phone number saved')}</span>`}
+    <button class="btn small" id="rcX">${t('Close')}</button></div></div>`;
+}
+function bindReceiptBar() {
+  const x = $('#rcX'), s2 = $('#rcSend');
+  const clear = () => { try { sessionStorage.removeItem('receipt'); } catch {} };
+  if (x) x.onclick = () => { clear(); $('#rcpt')?.remove(); };
+  if (s2) s2.addEventListener('click', () => setTimeout(() => { clear(); $('#rcpt')?.remove(); }, 300));
+}
+/** Where to go after saving a collection: the route list when it was started from the customer page. */
+function setCollectBack(aid, to) { try { sessionStorage.setItem('collectBack', JSON.stringify({ aid, to, at: Date.now() })); } catch {} }
+function takeCollectBack(aid) {
+  try {
+    const b = JSON.parse(sessionStorage.getItem('collectBack') || 'null'); sessionStorage.removeItem('collectBack');
+    return b && b.aid === aid && Date.now() - b.at < 30 * 60000 ? b.to : null;
+  } catch { return null; }
+}
+
 // ---------- customers ----------
 function renderCustomers() {
   setTitle(t('Customers'));
@@ -552,7 +578,7 @@ function renderCustomers() {
         lastLane = lane.toLowerCase();
         const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), paid = paidToday.has(c.id), nopay = !paid && visitedToday.has(c.id);
         const days = daysOf(c).map(dayLabel).join(' ');
-        return `${head}<li><a href="#/customer/${c.id}" class="row ${paid ? 'paid' : ''}">
+        return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''}">
           <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${esc(c.name)}</b><small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
@@ -561,7 +587,7 @@ function renderCustomers() {
     const due = list.reduce((s, c) => s + openBalance(c.id), 0), seen = list.filter((c) => paidToday.has(c.id)).length, nv = list.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
     $('#ctotal').textContent = `${list.length} ${t('customers')} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seen} ${t('paid today')}${nv ? ` · ⊘ ${nv}` : ''}` : ''}`;
   };
-  view.innerHTML = sellerBar() + `
+  view.innerHTML = sellerBar() + receiptBar(true) + `
     <div class="fchips" id="dayf"></div>
     <div class="toolbar"><input id="q" type="search" placeholder="${t('Search name, phone, lane')}"><a class="btn primary" href="#/customer-new">+ ${t('Add')}</a></div>
     <div class="muted small" id="ctotal"></div>
@@ -569,6 +595,7 @@ function renderCustomers() {
     <ul class="list" id="clist"></ul>
     <div class="arrsave" id="arrSave" hidden><button class="btn" id="arrCancel">${t('Cancel')}</button><button class="btn primary" id="arrOk">${t('Save order')}</button></div>`;
   bindSellerBar();
+  bindReceiptBar();
   $('#q').oninput = draw;
 
   const startArrange = (ids, note) => {
@@ -627,7 +654,12 @@ function renderCustomers() {
     startArrange([...ordered], `${t('Suggested from collection times. Check it, adjust by dragging, then save.')} (${ordered.timed}/${ids.length})`);
   };
   draw();
-  loadPaid();
+  loadPaid().then(() => {
+    // Coming back after a collection: bring that customer into view so the next house is right below.
+    let last = null; try { last = sessionStorage.getItem('lastCust'); sessionStorage.removeItem('lastCust'); } catch {}
+    const el = last && $(`#clist [data-cid="${last}"]`);
+    if (el) el.scrollIntoView({ block: 'center' });
+  });
   S.refresh = draw;
 }
 
@@ -724,6 +756,8 @@ async function renderCustomer(cid) {
         <div class="row" style="padding:0"><div><div class="nm">${esc(c.name)}</div>${c.address ? `<small>${esc(c.address)}</small>` : ''}</div>
           <a class="btn small" href="#/customer-edit/${cid}">${t('Edit')}</a></div>
         <div class="due"><div><span>${t('Total due')}</span><b>${money(openBalance(cid))}</b></div><span>${daysOf(c).map(dayLabel).join(' · ')}</span></div>
+        <div class="grid2" style="margin:6px 0 0"><button class="btn primary" id="qCol">+ ${t('Collection')}</button><button class="btn" id="qSale">+ ${t('New sale')}</button></div>
+        <div id="accPick" hidden></div>
       </div>
       <div class="qact">
         ${ph ? `<a class="btn" href="tel:${esc(ph)}"><span class="ic">📞</span>${t('Call')}</a><a class="btn" href="https://wa.me/${L.waNumber(ph)}" target="_blank" rel="noopener"><span class="ic">💬</span>WhatsApp</a>` : `<span></span><span></span>`}
@@ -769,6 +803,23 @@ async function renderCustomer(cid) {
       }, (err) => { gb.disabled = false; toast(t('Could not get location') + ': ' + err.message, true); },
       { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
     }));
+    // Quick collection / sale: straight in with one open account, else pick the account.
+    const openAccs = accs.filter((a) => a.status !== 'closed');
+    const quick = (kind) => {
+      const goTo = (aid) => { if (kind === 'collect') { setCollectBack(aid, '#/customers'); try { sessionStorage.setItem('lastCust', cid); } catch {} } go(`#/${kind}/${cid}/${aid}`); };
+      if (!openAccs.length) {
+        if (kind === 'collect') return toast(t('No open account'), true);
+        toast(t('Add an account first'), true); const d = $('#af')?.closest('details'); if (d) { d.open = true; d.scrollIntoView({ block: 'center' }); } return;
+      }
+      if (openAccs.length === 1) return goTo(openAccs[0].id);
+      const box = $('#accPick');
+      box.innerHTML = `<div class="small muted" style="margin:8px 0 4px">${kind === 'collect' ? t('Collection') : t('New sale')} — ${t('choose account')}</div>` +
+        openAccs.map((a) => `<button class="row pick" data-qa="${a.id}" style="border:1px solid var(--line);border-radius:12px;margin:4px 0"><div><b>${esc(a.name)}</b><small>${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></button>`).join('');
+      box.hidden = false;
+      $$('[data-qa]', box).forEach((b) => (b.onclick = () => goTo(b.dataset.qa)));
+    };
+    $('#qCol').onclick = () => quick('collect');
+    $('#qSale').onclick = () => quick('sale');
     const vf = $('#vf');
     $('#visitBtn').onclick = () => { vf.hidden = !vf.hidden; };
     $$('input[name=r]', vf).forEach((r) => (r.onchange = () => { $('#pdl').hidden = vf.r.value !== 'promise'; }));
@@ -854,7 +905,8 @@ async function renderAccount(cid, aid) {
     }
     const open = (a.queue || []).filter((q) => q.remaining > 0 && q.ref !== 'opening');
     const saleById = Object.fromEntries(data.sales.map((s) => [s.id, s]));
-    let rc = null; try { rc = JSON.parse(sessionStorage.getItem('receipt') || 'null'); } catch {}
+    try { sessionStorage.removeItem('collectBack'); } catch {} // a collection started from this page returns here
+    let rc = readReceipt();
     if (rc && rc.aid !== aid) rc = null;
     view.innerHTML = `
       ${rc ? `<div class="banner" id="rcpt"><b>✓ ${t('Saved')} · ${money(rc.amount)}</b><span class="small">${t('New balance')} ${money(rc.balance)}</span>
@@ -1097,8 +1149,8 @@ function renderCollect(cid, aid) {
     F.commit(b, onWriteError);
     const bal = L.round2(a.balance - amt);
     const text = `*${APP_NAME}*\n${c.name} — ${a.name}\n${money(amt)} ${t('received')} (${fmtDate(date)}, ${modeLabel(mode)}${mode === 'scrap' ? ': ' + scrapDetail(doc) : ''}).\n${t('Balance')}: *${money(bal)}*\n${t('Thank you')}`;
-    try { sessionStorage.setItem('receipt', JSON.stringify({ aid, amount: amt, balance: bal, phone: c.phone || '', text })); } catch {}
-    go(`#/account/${cid}/${aid}`);
+    try { sessionStorage.setItem('receipt', JSON.stringify({ aid, customer: c.name, amount: amt, balance: bal, phone: c.phone || '', text, at: Date.now() })); } catch {}
+    go(takeCollectBack(aid) || `#/account/${cid}/${aid}`);
   };
 }
 

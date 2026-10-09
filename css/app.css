@@ -342,3 +342,8 @@ th small { display: block; font-weight: 400; font-size: 10px; }
   .pbook { break-before: page; }
   .pbook:first-of-type { break-before: auto; }
 }
+
+/* Receipt bar floating above the bottom bar on the route list, so it stays visible after scrolling to the customer */
+.banner.float { position: fixed; left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom)); z-index: 15; margin: 0;
+  background: var(--card); border-color: var(--accent); box-shadow: 0 6px 20px rgba(0,0,0,.25); max-width: 696px; margin-inline: auto; }
+.banner.float .contact { margin-top: 6px; }
