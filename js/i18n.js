@@ -243,6 +243,14 @@ const ML = {
   'Read-only. Customer data is sent to Google Gemini to answer.': 'വായിക്കാൻ മാത്രം. മറുപടിക്കായി കസ്റ്റമർ ഡാറ്റ Google Gemini-ലേക്ക് അയക്കും.',
   'Voice input failed': 'ശബ്ദം തിരിച്ചറിയാനായില്ല',
   "The free AI limit is used up for now. Wait a minute and try again; if it keeps happening, today's free limit is over.": 'സൗജന്യ AI പരിധി ഇപ്പോൾ തീർന്നു. ഒരു മിനിറ്റ് കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക; തുടർന്നും വന്നാൽ ഇന്നത്തെ സൗജന്യ പരിധി കഴിഞ്ഞു.',
+  'Mon': 'തിങ്കൾ', 'Tue': 'ചൊവ്വ', 'Wed': 'ബുധൻ', 'Sat': 'ശനി', 'Sun': 'ഞായർ',
+  'All': 'എല്ലാം',
+  'No day': 'ദിവസമില്ല',
+  'Route day': 'റൂട്ട് ദിവസം',
+  'No customers here': 'ഇവിടെ കസ്റ്റമേഴ്സ് ഇല്ല',
+  'paid today': 'ഇന്ന് അടച്ചു',
+  "Today's route": 'ഇന്നത്തെ റൂട്ട്',
+  'No route today': 'ഇന്ന് റൂട്ട് ഇല്ല',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();

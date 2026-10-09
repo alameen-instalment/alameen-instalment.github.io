@@ -167,3 +167,22 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .langtog { flex: none; height: 44px; min-width: 34px; border-radius: 10px; border: 1px solid #cfd6d2; background: #fff; font: inherit; font-size: 13px; font-weight: 600; color: var(--brand); }
 @keyframes pulse { 50% { opacity: .6; } }
 #nav a { font-size: 10.5px; }
+
+.daypick { display: flex; gap: 6px; margin: 4px 0 10px; flex-wrap: wrap; }
+.daypick label { margin: 0; flex: 1; min-width: 56px; }
+.daypick input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.daypick span { display: block; text-align: center; padding: 10px 4px; border: 1px solid #cfd6d2; border-radius: 10px; background: #fff; color: var(--ink); font-weight: 600; font-size: 13px; }
+.daypick input:checked + span { background: var(--brand); border-color: var(--brand); color: #fff; }
+.fchips { display: flex; gap: 6px; overflow-x: auto; padding: 2px 16px 6px; margin: 0 -16px; scrollbar-width: none; }
+.fchips::-webkit-scrollbar { display: none; }
+.fchip { flex: none; font: inherit; font-size: 13px; font-weight: 600; padding: 8px 12px; border-radius: 99px; border: 1px solid #cfd6d2; background: #fff; color: var(--ink); cursor: pointer; }
+.fchip small { font-weight: 400; color: var(--muted); margin-left: 2px; }
+.fchip.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+.fchip.on small { color: #d8efe6; }
+.row.paid { background: #f2faf6; }
+.tick { color: var(--wa); }
+.routetile { display: block; width: 100%; text-align: left; font: inherit; margin: 10px 0 0; padding: 12px 14px; border-radius: var(--r); border: 1px solid #bcdccf; background: var(--brand-2); color: var(--brand); cursor: pointer; }
+.routetile span { display: block; font-size: 13px; }
+.routetile b { display: block; font-size: 18px; margin: 2px 0; }
+.routetile small { color: var(--muted); }
+.routetile.off { color: var(--muted); background: #fff; border-color: var(--line); font-size: 13px; cursor: default; }
