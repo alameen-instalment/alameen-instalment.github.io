@@ -4,9 +4,10 @@ import { t, getLang, setLang } from './i18n.js';
 import { APP_NAME, ADMIN_USERNAME } from './config.js';
 
 // ---------- state ----------
+const DEFAULT_MODEL = 'gemini-flash-latest';
 const S = {
   user: null, profile: null, sid: null,
-  users: {}, settings: { defaultMarginPct: 100, legacyMarginPct: 85, geminiKey: '', geminiModel: 'gemini-2.5-flash' },
+  users: {}, settings: { defaultMarginPct: 100, legacyMarginPct: 85, geminiKey: '', geminiModel: DEFAULT_MODEL },
   stock: {}, customers: {}, accounts: {}, complaints: {},
   subs: [], sellerSubs: [], refresh: null,
 };
@@ -121,7 +122,7 @@ F.onAuthStateChanged(F.auth, async (user) => {
     if (!snap.exists() && user.email === F.emailOf(ADMIN_USERNAME)) {
       await F.setDoc(ref, { username: ADMIN_USERNAME, name: 'Admin', role: 'admin', active: true });
       const st = F.doc(F.db, 'settings', 'main');
-      if (!(await F.getDoc(st)).exists()) await F.setDoc(st, { defaultMarginPct: 100, legacyMarginPct: 85, geminiKey: '', geminiModel: 'gemini-2.5-flash' });
+      if (!(await F.getDoc(st)).exists()) await F.setDoc(st, { defaultMarginPct: 100, legacyMarginPct: 85, geminiKey: '', geminiModel: DEFAULT_MODEL });
       snap = await F.getDoc(ref);
     }
     if (!snap.exists() || snap.data().active === false) { toast(t('This login is not active'), true); await F.logout(); return; }
@@ -694,15 +695,30 @@ async function compressImage(file, maxSide = 1280) {
   return data;
 }
 
+const RETIRED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+/** Pick the newest Flash model this key can use (used when the saved model is retired). */
+async function pickModel(key) {
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
+  if (!r.ok) return null;
+  const names = ((await r.json()).models || [])
+    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m) => m.name.replace('models/', ''))
+    .filter((n) => /^gemini-[\d.]+-flash$/.test(n));
+  names.sort((x, y) => parseFloat(y.split('-')[1]) - parseFloat(x.split('-')[1]));
+  return names[0] || null;
+}
+
 async function readBill(dataUrl) {
   const key = S.settings.geminiKey;
   if (!key) throw new Error(t('Bill reading key not set. Admin → App settings.'));
-  const model = S.settings.geminiModel || 'gemini-2.5-flash';
+  let model = S.settings.geminiModel;
+  if (!model || RETIRED_MODELS.includes(model)) model = DEFAULT_MODEL;
   const prompt = 'Read this purchase bill. It may be printed or handwritten, in English or Malayalam. ' +
     'Return only JSON: {"supplier": string, "date": "YYYY-MM-DD" or "", "items": [{"name": string, "qty": number, "unitCost": number}]}. ' +
     'unitCost is the price of ONE unit; if only a line total is shown, divide it by qty. Write item names in English. ' +
     'Do not include totals, taxes, discounts or round-off as items.';
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+  const call = (m) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify({
@@ -710,7 +726,15 @@ async function readBill(dataUrl) {
       generationConfig: { responseMimeType: 'application/json', temperature: 0 },
     }),
   });
-  if (!res.ok) throw new Error(`AI ${res.status}: ${(await res.text()).slice(0, 160)}`);
+  let res = await call(model);
+  if (res.status === 404) {
+    const alt = await pickModel(key);
+    if (alt && alt !== model) {
+      res = await call(alt);
+      if (res.ok && isAdmin()) { const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'settings', 'main'), { geminiModel: alt }, { merge: true }); F.commit(b, () => {}); }
+    }
+  }
+  if (!res.ok) throw new Error(`AI ${res.status}: ${(await res.text()).replace(/\s+/g, ' ').slice(0, 300)}`);
   const j = await res.json();
   const txt = j.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '{}';
   return JSON.parse(txt.replace(/^```(json)?|```$/g, '').trim());
@@ -1156,12 +1180,12 @@ function renderAppSettings() {
     <label>${t('Old balance margin %')}<input name="lm" type="number" step="any" value="${s.legacyMarginPct}"></label>
     <p class="muted small">${t('Changing the old balance margin affects accounts created after the change.')}</p>
     <label>${t('Gemini API key (bill reading)')}<input name="gk" type="password" value="${esc(s.geminiKey || '')}" autocomplete="off"></label>
-    <label>${t('Gemini model')}<input name="gm" value="${esc(s.geminiModel || 'gemini-2.5-flash')}"></label>
+    <label>${t('Gemini model')}<input name="gm" value="${esc(s.geminiModel || DEFAULT_MODEL)}"></label>
     <button class="btn primary" type="submit">${t('Save')}</button></form>`;
   $('#as').onsubmit = (e) => {
     e.preventDefault();
     const f = e.target, b = F.writeBatch(F.db);
-    const upd = { defaultMarginPct: num(f.dm.value), legacyMarginPct: num(f.lm.value), geminiKey: f.gk.value.trim(), geminiModel: f.gm.value.trim() || 'gemini-2.5-flash' };
+    const upd = { defaultMarginPct: num(f.dm.value), legacyMarginPct: num(f.lm.value), geminiKey: f.gk.value.trim(), geminiModel: f.gm.value.trim() || DEFAULT_MODEL };
     b.set(F.doc(F.db, 'settings', 'main'), upd, { merge: true });
     F.audit(b, S.user.uid, 'settings', 'settings/main', { defaultMarginPct: s.defaultMarginPct, legacyMarginPct: s.legacyMarginPct }, { defaultMarginPct: upd.defaultMarginPct, legacyMarginPct: upd.legacyMarginPct });
     F.commit(b, onWriteError); toast(t('Saved'));
