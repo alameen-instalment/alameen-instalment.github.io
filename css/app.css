@@ -347,3 +347,35 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .banner.float { position: fixed; left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom)); z-index: 15; margin: 0;
   background: var(--card); border-color: var(--accent); box-shadow: 0 6px 20px rgba(0,0,0,.25); max-width: 696px; margin-inline: auto; }
 .banner.float .contact { margin-top: 6px; }
+
+.discbox { border: 1px dashed var(--fieldline); border-radius: 12px; padding: 6px 12px; margin: 8px 0; }
+.discbox summary { font-size: 14px; }
+.discrow { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: center; margin: 6px 0; }
+.discrow input { margin: 0; }
+.ledger tr.discount td:nth-child(4) { color: var(--warn); font-weight: 700; }
+
+.pline .billname { grid-column: 1 / -1; font-size: 11px; color: var(--muted); margin-bottom: -2px; overflow-wrap: anywhere; }
+
+/* Score circles: own score inside a coloured circle; other sellers as initial + score; 🚫 flag as a struck red circle */
+.scores { display: inline-flex; flex-wrap: wrap; gap: 4px; margin: 3px 0 0 0; vertical-align: middle; }
+.row > div > .scores { display: flex; }
+.sc { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 13px; font-size: 11.5px; font-weight: 800; color: #fff; cursor: pointer; line-height: 1; }
+.sc.big { min-width: 46px; height: 46px; border-radius: 23px; font-size: 18px; }
+.sc.mini { min-width: 0; height: 22px; font-size: 10.5px; padding: 0 7px; }
+.sc-good { background: #1E9E5A; } .sc-ok { background: #D49B00; } .sc-risk { background: #D2453A; } .sc-new { background: var(--grey); }
+.sc-ban { background: #fff; color: #D2453A; border: 2px solid #D2453A; position: relative; overflow: hidden; height: 22px; min-width: 22px; padding: 0 5px; }
+.sc-ban::after { content: ''; position: absolute; left: -4px; right: -4px; top: 50%; border-top: 2px solid #D2453A; transform: rotate(-35deg); }
+.tipbubble { position: absolute; z-index: 40; background: var(--ink); color: var(--bg); font-size: 13px; line-height: 1.4; padding: 9px 12px; border-radius: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+.scorecard { display: flex; gap: 12px; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.scorecard .txt { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.scorecard .txt b { color: var(--ink); }
+
+.mealcard { background: #FFF3E3; border-color: #F6D3A8; }
+:root[data-theme="dark"] .mealcard { background: #2B2114; border-color: #5A4220; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .mealcard { background: #2B2114; border-color: #5A4220; } }
+.meallist { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.mealmsg { display: flex; gap: 10px; align-items: center; }
+.mealmsg > div { background: var(--card); border: 1px solid var(--line); border-radius: 14px 14px 14px 4px; padding: 7px 11px; font-size: 14px; }
+.mealmsg > div small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.mealmsg.wait { opacity: .6; }
+.mealmsg.wait > div { background: none; border-style: dashed; }

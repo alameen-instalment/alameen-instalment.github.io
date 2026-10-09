@@ -25,7 +25,7 @@ service cloud.firestore {
     match /complaints/{id}      { allow read, create: if isUser(); allow update, delete: if isAdmin(); }
     match /scrapLosses/{id}     { allow create: if isUser(); allow read, update, delete: if isAdmin(); }
     match /companyExpenses/{id} { allow read, write: if isAdmin(); }
-    match /auditLog/{id}        { allow create: if isUser(); allow read: if isAdmin(); }
+    match /auditLog/{id}        { allow create: if isUser(); allow read, delete: if isAdmin(); }
 
     // Customer catalog: public (no login) can read only items marked show, and photos. Never contains cost.
     match /catalog/{id} {
@@ -44,6 +44,20 @@ service cloud.firestore {
     match /scrapSales/{id}      { allow read, write: if isAdmin(); }
     // General calendar events and holidays added by the admin.
     match /events/{id}          { allow read: if isUser(); allow write: if isAdmin(); }
+    // Item history: date, item, quantity and seller only (no sale price, no customer). Written by the seller it belongs to.
+    match /stockMoves/{id}      { allow read: if isUser(); allow create: if ownKey(request.resource.data.sellerKey);
+                                  allow update: if ownKey(resource.data.sellerKey) && request.resource.data.sellerKey == resource.data.sellerKey; allow delete: if isAdmin(); }
+    // Customers shared between sellers by hashed phone number: seller, score and 🚫 flag only.
+    match /phoneIndex/{id}      { allow read: if isUser(); allow create: if ownKey(request.resource.data.sellerKey);
+                                  allow update: if ownKey(resource.data.sellerKey) && request.resource.data.sellerKey == resource.data.sellerKey;
+                                  allow delete: if ownKey(resource.data.sellerKey); }
+    // Supplier bill name -> our item name, learned when bills are saved.
+    match /nameMap/{id}         { allow read, create, update: if isUser(); allow delete: if isAdmin(); }
+    // Tonight's dinner order, one message per seller per day.
+    match /meals/{id}           { allow read: if isUser();
+                                  allow create, update: if ownKey(request.resource.data.sellerKey) && id == request.resource.data.date + '_' + request.resource.data.sellerKey
+                                                         && (resource == null || resource.data.sellerKey == request.resource.data.sellerKey);
+                                  allow delete: if isAdmin(); }
 
     // Each seller's customers, accounts, sales, collections, returns, notes, expenses, visits, orders, route changes and day closings.
     match /sellers/{sid}/{coll}/{docId} {
