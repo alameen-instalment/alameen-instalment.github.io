@@ -252,6 +252,12 @@ const ML = {
   "Today's route": 'ഇന്നത്തെ റൂട്ട്',
   'No route today': 'ഇന്ന് റൂട്ട് ഇല്ല',
   'New version available — tap to update': 'പുതിയ വേർഷൻ ലഭ്യമാണ് — അപ്ഡേറ്റ് ചെയ്യാൻ തൊടുക',
+  'House no.': 'വീട്ടുനമ്പർ', 'Lane': 'ലെയിൻ', 'No lane': 'ലെയിൻ ഇല്ല',
+  'Phone numbers': 'ഫോൺ നമ്പറുകൾ', 'default': 'ഡിഫോൾട്ട്', 'Default': 'ഡിഫോൾട്ട്',
+  'Label': 'ലേബൽ', 'Number': 'നമ്പർ', 'Another number': 'മറ്റൊരു നമ്പർ',
+  'Self': 'സ്വന്തം', 'Husband': 'ഭർത്താവ്', 'Wife': 'ഭാര്യ', 'Son': 'മകൻ', 'Daughter': 'മകൾ', 'Neighbour': 'അയൽവാസി',
+  'Home phone': 'വീട്ടിലെ ഫോൺ',
+  'Search name, phone, lane': 'പേര്, ഫോൺ, ലെയിൻ തിരയുക',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();

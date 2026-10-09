@@ -37,6 +37,18 @@ const todayDay = () => new Date().getDay();
 const daysOf = (c) => (Array.isArray(c?.days) ? c.days : []);
 const dayPicker = (sel = []) => `<div class="daypick">${ROUTE_DAYS.map((d) =>
   `<label><input type="checkbox" name="day" value="${d}" ${sel.includes(d) ? 'checked' : ''}><span>${dayLabel(d)}</span></label>`).join('')}</div>`;
+// Phones: [{label, number, primary}]; c.phone always mirrors the default number.
+const phonesOf = (c) => (Array.isArray(c?.phones) && c.phones.length ? c.phones : c?.phone ? [{ label: '', number: c.phone, primary: true }] : []);
+const PHONE_LABELS = ['Self', 'Husband', 'Wife', 'Son', 'Daughter', 'Home phone', 'Neighbour'];
+const placeOf = (c) => [c?.house, c?.lane].map((x) => String(x || '').trim()).filter(Boolean).join(' · ');
+const placeBadge = (c, big = false) => (placeOf(c) ? `<span class="place ${big ? 'big' : ''}">📍 ${esc(placeOf(c))}</span>` : '');
+const houseCmp = (a, b) => String(a.house || '').localeCompare(String(b.house || ''), 'en', { numeric: true, sensitivity: 'base' });
+const searchHit = (c, q) => !q || [c.name, c.lane, c.house, ...phonesOf(c).map((p) => p.number)].some((x) => String(x || '').toLowerCase().includes(q));
+const phoneRowHtml = (p = {}, i = 0) => `<div class="phonerow">
+  <input name="pl" list="plabels" placeholder="${t('Label')}" value="${esc(p.label || '')}">
+  <input name="pn" type="tel" inputmode="tel" placeholder="${t('Number')}" value="${esc(p.number || '')}">
+  <label class="star" title="${t('Default')}"><input type="radio" name="pdef" value="${i}" ${p.primary ? 'checked' : ''}><span>★</span></label>
+  <button type="button" class="x" data-prm>×</button></div>`;
 const modeLabel = (m) => (m === 'upi' ? 'UPI' : t('Cash'));
 const payPicker = (name, sel) => `<div class="seg" role="radiogroup">${L.PAY_MODES.map((m) =>
   `<label><input type="radio" name="${name}" value="${m}" ${m === sel ? 'checked' : ''}><span>${m === 'upi' ? '📱' : '💵'} ${modeLabel(m)}</span></label>`).join('')}</div>`;
@@ -311,13 +323,18 @@ function renderCustomers() {
     $$('[data-f]').forEach((btn) => (btn.onclick = () => { filter = btn.dataset.f; try { sessionStorage.setItem('custDay', filter); } catch {} draw(); }));
     const qv = ($('#q')?.value || '').toLowerCase();
     const list = all.filter((c) => matches(c, filter))
-      .filter((c) => !qv || c.name.toLowerCase().includes(qv) || String(c.phone || '').includes(qv))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .filter((c) => searchHit(c, qv));
+    const byRoute = filter !== 'all' && filter !== 'none';
+    list.sort(byRoute ? (a, b) => (a.lane || '\uffff').localeCompare(b.lane || '\uffff', 'en', { sensitivity: 'base' }) || houseCmp(a, b) || a.name.localeCompare(b.name)
+      : (a, b) => a.name.localeCompare(b.name));
+    let lastLane = null;
     $('#clist').innerHTML = list.map((c) => {
+      const lane = (c.lane || '').trim(), head = byRoute && lane.toLowerCase() !== lastLane ? `<li class="lanehead">${esc(lane || t('No lane'))}</li>` : '';
+      lastLane = lane.toLowerCase();
       const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), paid = paidToday.has(c.id);
       const days = daysOf(c).map(dayLabel).join(' ');
-      return `<li><a href="#/customer/${c.id}" class="row ${paid ? 'paid' : ''}">
-        <div><b>${paid ? '<span class="tick">✓</span> ' : ''}${esc(c.name)}</b><small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+      return `${head}<li><a href="#/customer/${c.id}" class="row ${paid ? 'paid' : ''}">
+        <div>${placeBadge(c)}<b>${paid ? '<span class="tick">✓</span> ' : ''}${esc(c.name)}</b><small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
         <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
     const due = list.reduce((s, c) => s + openBalance(c.id), 0), seen = list.filter((c) => paidToday.has(c.id)).length;
@@ -325,7 +342,7 @@ function renderCustomers() {
   };
   view.innerHTML = sellerBar() + `
     <div class="fchips" id="dayf"></div>
-    <div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}"><a class="btn primary" href="#/customer-new">+ ${t('Add')}</a></div>
+    <div class="toolbar"><input id="q" type="search" placeholder="${t('Search name, phone, lane')}"><a class="btn primary" href="#/customer-new">+ ${t('Add')}</a></div>
     <div class="muted small" id="ctotal"></div>
     <ul class="list" id="clist"></ul>`;
   bindSellerBar();
@@ -356,25 +373,39 @@ function renderCustomerForm(id) {
   setTitle(c ? t('Edit customer') : t('New customer'), true);
   view.innerHTML = `<form id="cf" class="form">
     <label>${t('Name')}<input name="name" value="${esc(c?.name)}" required></label>
-    <label>${t('Phone')}<input name="phone" type="tel" inputmode="tel" value="${esc(c?.phone)}"></label>
+    <div class="two place-in">
+      <label>${t('House no.')}<input name="house" value="${esc(c?.house)}" autocapitalize="characters"></label>
+      <label>${t('Lane')}<input name="lane" list="lanes" value="${esc(c?.lane)}" autocomplete="off"></label></div>
+    <datalist id="lanes">${[...new Set(Object.values(S.customers).map((x) => (x.lane || '').trim()).filter(Boolean))].sort().map((l) => `<option value="${esc(l)}">`).join('')}</datalist>
+    <label>${t('Phone numbers')} <small class="muted">(★ ${t('default')})</small></label>
+    <div id="phones">${(phonesOf(c).length ? phonesOf(c) : [{ primary: true }]).map((p, i) => phoneRowHtml(p, i)).join('')}</div>
+    <datalist id="plabels">${PHONE_LABELS.map((l) => `<option value="${t(l)}">`).join('')}</datalist>
+    <button type="button" class="btn ghost small" id="addPhone">+ ${t('Another number')}</button>
     <label>${t('Address')}<textarea name="address" rows="2">${esc(c?.address)}</textarea></label>
     <label>${t('Route day')}</label>${dayPicker(daysOf(c))}
     ${c ? '' : `<h3>${t('Accounts')}</h3><div id="accs">${accountRowHtml(0)}</div>
       <button type="button" class="btn ghost" id="addAcc">+ ${t('Another account')}</button>
       <p class="muted small">${t('Opening balance: amount still due from the old book. Leave empty for a new customer.')}</p>`}
     <button class="btn primary" type="submit">${t('Save')}</button></form>`;
-  let n = 1;
+  let n = 1, pn = $$('.phonerow').length;
   if (!c) $('#addAcc').onclick = () => $('#accs').insertAdjacentHTML('beforeend', accountRowHtml(n++));
+  const bindPhones = () => $$('[data-prm]').forEach((b) => (b.onclick = () => { if ($$('.phonerow').length > 1) b.parentElement.remove(); }));
+  $('#addPhone').onclick = () => { $('#phones').insertAdjacentHTML('beforeend', phoneRowHtml({}, pn++)); bindPhones(); };
+  bindPhones();
   $('#cf').onsubmit = (e) => {
     e.preventDefault();
     const f = e.target, sid = S.sid, b = F.writeBatch(F.db);
-    const data = { name: f.name.value.trim(), phone: f.phone.value.trim(), address: f.address.value.trim(),
-      days: $$('input[name=day]:checked', f).map((x) => Number(x.value)) };
+    const def = $('input[name=pdef]:checked', f)?.value;
+    const phones = $$('.phonerow', f).map((r) => ({ label: $('[name=pl]', r).value.trim(), number: $('[name=pn]', r).value.trim(), primary: $('[name=pdef]', r).value === def }))
+      .filter((p) => p.number);
+    if (phones.length && !phones.some((p) => p.primary)) phones[0].primary = true;
+    const data = { name: f.name.value.trim(), house: f.house.value.trim(), lane: f.lane.value.trim(), phones, phone: phones.find((p) => p.primary)?.number || '',
+      address: f.address.value.trim(), days: $$('input[name=day]:checked', f).map((x) => Number(x.value)) };
     if (c) {
       const upd = { ...data };
       if (c.address && c.address !== data.address) upd.addressHistory = [...(c.addressHistory || []), { address: c.address, until: today() }];
       b.update(F.sellerDoc(sid, 'customers', id), upd);
-      F.audit(b, S.user.uid, 'customer', `sellers/${sid}/customers/${id}`, { name: c.name, phone: c.phone, address: c.address, days: daysOf(c) }, data);
+      F.audit(b, S.user.uid, 'customer', `sellers/${sid}/customers/${id}`, { name: c.name, house: c.house || '', lane: c.lane || '', phones: phonesOf(c), address: c.address, days: daysOf(c) }, data);
       F.commit(b, onWriteError);
       toast(t('Saved'));
       return go(`#/customer/${id}`);
@@ -412,9 +443,12 @@ async function renderCustomer(cid) {
     const notes = (await F.fetchAll(F.query(F.sellerCol(sid, 'notes'), F.where('customerId', '==', cid)))).sort((a, b) => b.createdAt - a.createdAt);
     view.innerHTML = `
       <div class="card">
-        <div class="row"><div><b>${esc(c.name)}</b><small>${esc(c.phone || '')}</small><small>${esc(c.address || '')}</small></div>
+        ${placeBadge(c, true)}
+        <div class="row"><div><b>${esc(c.name)}</b><small>${esc(c.address || '')}</small>${daysOf(c).length ? `<small>${t('Route day')}: ${daysOf(c).map(dayLabel).join(', ')}</small>` : ''}</div>
         <a class="btn small" href="#/customer-edit/${cid}">${t('Edit')}</a></div>
         ${contactButtons(c.phone)}
+        ${phonesOf(c).length > 1 || phonesOf(c)[0]?.label ? `<ul class="phonelist">${phonesOf(c).map((p) => `<li>${p.primary ? '<span class="star on">★</span>' : '<span class="star">☆</span>'}
+          <span>${esc(p.label || '')}</span><b>${esc(p.number)}</b><a class="btn small" href="tel:${esc(p.number)}">📞</a></li>`).join('')}</ul>` : ''}
         ${(c.addressHistory || []).length ? `<details><summary>${t('Old addresses')}</summary>${c.addressHistory.map((h) => `<div class="small">${esc(h.address)} <span class="muted">(${t('until')} ${fmtDate(h.until)})</span></div>`).join('')}</details>` : ''}
       </div>
       <h3>${t('Accounts')} <span class="muted">${t('Total due')} ${money(openBalance(cid))}</span></h3>
@@ -453,10 +487,10 @@ function renderPick(action) {
   if (needSeller()) return;
   const draw = () => {
     const qv = ($('#q')?.value || '').toLowerCase();
-    const list = Object.values(S.customers).filter((c) => !qv || c.name.toLowerCase().includes(qv) || String(c.phone || '').includes(qv))
+    const list = Object.values(S.customers).filter((c) => searchHit(c, qv))
       .sort((a, b) => a.name.localeCompare(b.name));
     $('#plist').innerHTML = list.flatMap((c) => accountsOf(c.id).filter((a) => a.status !== 'closed').map((a) =>
-      `<li><a class="row" href="#/${action}/${c.id}/${a.id}"><div><b>${esc(c.name)}</b><small>${esc(a.name)} · ${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`)).join('')
+      `<li><a class="row" href="#/${action}/${c.id}/${a.id}"><div>${placeBadge(c)}<b>${esc(c.name)}</b><small>${esc(a.name)} · ${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`)).join('')
       || `<li class="muted">${t('No matching customer')} · <a href="#/customer-new">${t('Add customer')}</a></li>`;
   };
   view.innerHTML = `<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}" autofocus></div><ul class="list" id="plist"></ul>`;
@@ -1201,7 +1235,7 @@ async function renderBackup() {
       const cname = Object.fromEntries(per.customers.map((c) => [c.id, c.name]));
       const aname = Object.fromEntries(per.accounts.map((a) => [a.id, a.name]));
       const when = (ms) => (ms ? new Date(ms).toLocaleString('en-IN') : '');
-      add('Customers', per.customers.map((c) => ({ seller: c.seller, id: c.id, name: c.name, phone: c.phone, address: c.address, routeDays: daysOf(c).map((x) => DAY_KEYS[x]).join(' '), oldAddresses: (c.addressHistory || []).map((h) => `${h.address} (till ${h.until})`).join('; '), cashCount: c.modeCounts?.cash || 0, upiCount: c.modeCounts?.upi || 0 })));
+      add('Customers', per.customers.map((c) => ({ seller: c.seller, id: c.id, name: c.name, houseNo: c.house || '', lane: c.lane || '', phone: c.phone, otherPhones: phonesOf(c).filter((p) => !p.primary).map((p) => `${p.label} ${p.number}`.trim()).join('; '), address: c.address, routeDays: daysOf(c).map((x) => DAY_KEYS[x]).join(' '), oldAddresses: (c.addressHistory || []).map((h) => `${h.address} (till ${h.until})`).join('; '), cashCount: c.modeCounts?.cash || 0, upiCount: c.modeCounts?.upi || 0 })));
       add('Accounts', per.accounts.map((a) => ({ seller: a.seller, id: a.id, customer: cname[a.customerId], customerId: a.customerId, account: a.name, frequency: a.frequency, openingBalance: a.openingBalance, balance: a.balance, status: a.status })));
       add('Sales', per.sales.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], account: aname[x.accountId], items: items(x.items), saleValue: x.saleValue, cost: x.cost, advance: x.advance, returnedValue: x.creditedValue || 0, id: x.id })));
       add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
@@ -1270,15 +1304,15 @@ const acctInfo = (a, d) => ({ account: a.name, frequency: a.frequency, balance: 
 
 const ASK_TOOLS = {
   find_customers: {
-    description: 'Search customers by name or phone (partial, case-insensitive). Empty query lists all. Optional route day filter: mon, tue, wed, sat, sun, today, or none (no route day set). Thursday and Friday have no route. Returns each customer with route days, accounts, balances, last payment date and whether they paid today. Use sort="balance" for biggest dues.',
+    description: 'Search customers by name, phone, lane or house number (partial, case-insensitive). Empty query lists all. Optional route day filter: mon, tue, wed, sat, sun, today, or none (no route day set). Thursday and Friday have no route. Returns each customer with route days, accounts, balances, last payment date and whether they paid today. Use sort="balance" for biggest dues.',
     parameters: { type: 'OBJECT', properties: { query: { type: 'STRING' }, day: { type: 'STRING', enum: ['mon', 'tue', 'wed', 'sat', 'sun', 'today', 'none'] }, sort: { type: 'STRING', enum: ['name', 'balance'] }, limit: { type: 'INTEGER' } } },
     run: async ({ query = '', day = '', sort = 'name', limit = 30 }) => {
       const d = await askData(), q = query.toLowerCase().trim(), now = today();
       const dayNum = day === 'today' ? todayDay() : Object.entries(DAY_KEYS).find(([, k]) => k === day)?.[0];
-      let list = d.customers.filter((c) => !q || c.name.toLowerCase().includes(q) || String(c.phone || '').includes(q))
+      let list = d.customers.filter((c) => searchHit(c, q))
         .filter((c) => !day ? true : day === 'none' ? !daysOf(c).length : daysOf(c).includes(Number(dayNum))).map((c) => {
         const accs = d.accounts.filter((a) => a.customerId === c.id);
-        return { customer_id: c.id, name: c.name, phone: c.phone || '', address: c.address || '', seller: c.seller, routeDays: daysOf(c).map((x) => DAY_KEYS[x]),
+        return { customer_id: c.id, name: c.name, houseNo: c.house || '', lane: c.lane || '', phone: c.phone || '', otherPhones: phonesOf(c).filter((p) => !p.primary).map((p) => `${p.label} ${p.number}`.trim()), address: c.address || '', seller: c.seller, routeDays: daysOf(c).map((x) => DAY_KEYS[x]),
           paidToday: accs.some((a) => d.lastPay[a.id] === now),
           totalDue: L.round2(accs.filter((a) => a.status !== 'closed').reduce((s, a) => s + (a.balance || 0), 0)), accounts: accs.map((a) => acctInfo(a, d)) };
       });
@@ -1299,7 +1333,7 @@ const ASK_TOOLS = {
         return { ...acctInfo(a, d), statement: led.slice(-40).map((r) => ({ date: r.date || 'opening', type: r.type, amount: r.amount, balanceAfter: r.balance,
           detail: r.type === 'sale' ? r.ref.items.map((i) => `${i.name} x${i.qty} @${i.price}`).join(', ') : r.type === 'return' ? r.ref.items.map((i) => `${i.name} x${i.qty}`).join(', ') : r.ref?.mode === 'upi' ? 'UPI' : r.ref ? 'Cash' : '' })) };
       });
-      return { name: c.name, phone: c.phone, address: c.address, oldAddresses: c.addressHistory || [], seller: c.seller, accounts,
+      return { name: c.name, houseNo: c.house || '', lane: c.lane || '', phones: phonesOf(c), address: c.address, oldAddresses: c.addressHistory || [], seller: c.seller, accounts,
         notes: notes.map((n) => ({ date: n.date, text: n.text, remindOn: n.dueDate || '', done: !!n.done })) };
     },
   },

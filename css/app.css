@@ -187,3 +187,17 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .routetile small { color: var(--muted); }
 .routetile.off { color: var(--muted); background: #fff; border-color: var(--line); font-size: 13px; cursor: default; }
 .updbar { position: fixed; left: 16px; right: 16px; top: calc(60px + env(safe-area-inset-top)); z-index: 30; font: inherit; font-weight: 600; padding: 12px; border: 0; border-radius: 10px; background: #ffb74d; color: #1b1f1d; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+
+.place { display: inline-block; background: #fff1d6; color: #7a4b00; border: 1px solid #f1d39a; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 700; margin-bottom: 3px; }
+.place.big { display: block; font-size: 18px; padding: 8px 12px; margin-bottom: 10px; border-radius: 10px; }
+.lanehead { background: none !important; border: 0 !important; padding: 10px 2px 2px; font-size: 12px; font-weight: 700; color: var(--brand); text-transform: uppercase; letter-spacing: .03em; }
+.phonerow { display: grid; grid-template-columns: 30% 1fr 40px 24px; gap: 6px; align-items: center; margin: 6px 0; }
+.phonerow input { margin: 0; }
+.star { margin: 0; display: flex; justify-content: center; cursor: pointer; }
+.star input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.star span, span.star { font-size: 22px; color: #c9cfcc; line-height: 1; }
+.star input:checked + span, span.star.on { color: #e0a100; }
+.phonelist { list-style: none; padding: 0; margin: 10px 0 0; }
+.phonelist li { display: grid; grid-template-columns: 24px auto 1fr auto; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px dashed var(--line); }
+.phonelist li span:nth-child(2) { color: var(--muted); font-size: 12px; }
+.row .place { display: table; margin-bottom: 4px; }
