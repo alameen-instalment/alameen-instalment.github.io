@@ -1641,7 +1641,8 @@ function renderPurchase(mode) {
     ${catSel(categories().includes(cat) ? cat : lastCat)}</div>`;
   };
   view.innerHTML = `
-    ${mode ? `<div class="card"><label class="btn primary block">📷 ${t('Take / choose bill photo')}<input id="ph" type="file" accept="image/*" capture="environment" hidden></label>
+    ${mode ? `<div class="card"><div class="grid2" style="margin:0"><label class="btn primary">📷 ${t('Take photo')}<input id="ph" type="file" accept="image/*" capture="environment" hidden></label>
+      <label class="btn">🖼️ ${t('From gallery')}<input id="phg" type="file" accept="image/*" hidden></label></div>
       <img id="prev" class="billprev" hidden><div id="aiStat" class="muted small"></div></div>` : ''}
     <form id="pf" class="card form">
       <div class="two"><label>${t('Supplier')}<input name="sup"></label><label>${t('Bill date')}<input name="date" type="date" value="${today()}"></label></div>
@@ -1671,6 +1672,7 @@ function renderPurchase(mode) {
   $('#addLine').onclick = () => { $('#lines').insertAdjacentHTML('beforeend', lineHtml()); bindLines(); };
   bindLines();
   if (mode) {
+    $('#phg').onchange = (e) => $('#ph').onchange(e);
     $('#ph').onchange = async (e) => {
       const file = e.target.files[0]; if (!file) return;
       photo = await compressImage(file);
