@@ -40,6 +40,8 @@ a { color: var(--accent-text); }
 
 .top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 8px;
   background: var(--bg); color: var(--ink); padding: 14px 18px 10px; padding-top: calc(14px + env(safe-area-inset-top)); }
+.hlogo { width: 30px; height: 30px; border-radius: 8px; flex: none; }
+.loginlogo { display: block; width: 84px; height: 84px; margin: 4px auto 0; border-radius: 20px; }
 .top h1 { font-size: 18px; margin: 0; font-weight: 800; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .top .sub { font-size: 13px; color: var(--muted); white-space: nowrap; }
 .iconbtn { background: none; border: 0; color: var(--ink); font-size: 30px; line-height: 1; padding: 0 8px 0 0; cursor: pointer; }

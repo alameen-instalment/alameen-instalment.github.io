@@ -95,6 +95,7 @@ const go = (h) => { location.hash = h; };
 function setTitle(title, back, sub = '') {
   $('#title').textContent = title;
   $('#hsub').textContent = sub;
+  $('#hlogo').hidden = !!back || title !== APP_NAME;
   const b = $('#back');
   b.hidden = !back;
   b.onclick = () => (typeof back === 'string' ? go(back) : history.back());
@@ -228,10 +229,10 @@ F.onAuthStateChanged(F.auth, async (user) => {
 
 function renderLogin() {
   $('#nav').hidden = true;
-  setTitle(APP_NAME);
+  setTitle(APP_NAME); $('#hlogo').hidden = true;
   view.innerHTML = `
   <form id="loginForm" class="card login">
-    <div class="brand">${esc(APP_NAME)}</div>
+    <img class="loginlogo" src="icons/logo.svg" alt=""><div class="brand">${esc(APP_NAME)}</div>
     <label>${t('Username')}<input name="u" autocomplete="username" autocapitalize="none" required></label>
     <label>${t('Password')}<input name="p" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required></label>
     <div id="loginErr" class="loginerr"></div>
