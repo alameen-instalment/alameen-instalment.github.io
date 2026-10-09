@@ -1,0 +1,34 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isUser() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && profile().active == true;
+    }
+    function isAdmin() { return isUser() && profile().role == 'admin'; }
+
+    match /users/{uid} {
+      allow read: if signedIn();
+      // First admin login creates its own profile; after that only the admin manages users.
+      allow create: if (signedIn() && request.auth.uid == uid
+                        && request.auth.token.email == 'admin@alameen-instalment.app'
+                        && request.resource.data.role == 'admin') || isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    match /settings/{id}        { allow read: if isUser(); allow write: if isAdmin(); }
+    match /stock/{id}           { allow read, create, update: if isUser(); allow delete: if isAdmin(); }
+    match /purchases/{id}       { allow read, create, update: if isUser(); allow delete: if isAdmin(); }
+    match /billPhotos/{id}      { allow read, create: if isUser(); allow update, delete: if isAdmin(); }
+    match /complaints/{id}      { allow read, create: if isUser(); allow update, delete: if isAdmin(); }
+    match /scrapLosses/{id}     { allow create: if isUser(); allow read, update, delete: if isAdmin(); }
+    match /companyExpenses/{id} { allow read, write: if isAdmin(); }
+    match /auditLog/{id}        { allow create: if isUser(); allow read: if isAdmin(); }
+
+    // Each seller's customers, accounts, sales, collections, returns, notes and expenses.
+    match /sellers/{sid}/{coll}/{docId} {
+      allow read, write: if isUser() && (profile().get('sellerKey', request.auth.uid) == sid || isAdmin());
+    }
+  }
+}
