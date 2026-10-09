@@ -186,3 +186,4 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .routetile b { display: block; font-size: 18px; margin: 2px 0; }
 .routetile small { color: var(--muted); }
 .routetile.off { color: var(--muted); background: #fff; border-color: var(--line); font-size: 13px; cursor: default; }
+.updbar { position: fixed; left: 16px; right: 16px; top: calc(60px + env(safe-area-inset-top)); z-index: 30; font: inherit; font-weight: 600; padding: 12px; border: 0; border-radius: 10px; background: #ffb74d; color: #1b1f1d; box-shadow: 0 2px 8px rgba(0,0,0,.2); }

@@ -251,6 +251,7 @@ const ML = {
   'paid today': 'ഇന്ന് അടച്ചു',
   "Today's route": 'ഇന്നത്തെ റൂട്ട്',
   'No route today': 'ഇന്ന് റൂട്ട് ഇല്ല',
+  'New version available — tap to update': 'പുതിയ വേർഷൻ ലഭ്യമാണ് — അപ്ഡേറ്റ് ചെയ്യാൻ തൊടുക',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();

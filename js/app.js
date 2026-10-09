@@ -1452,4 +1452,16 @@ applyNav();
 window.addEventListener('online', () => document.body.classList.remove('offline'));
 window.addEventListener('offline', () => document.body.classList.add('offline'));
 if (!navigator.onLine) document.body.classList.add('offline');
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then((reg) => {
+    // Check for a new version whenever the app comes back to the screen.
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+  // A new version took over: offer a one-tap reload instead of reloading in the middle of an entry.
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || $('#updBar')) return;
+    document.body.insertAdjacentHTML('beforeend', `<button id="updBar" class="updbar">${t('New version available — tap to update')}</button>`);
+    $('#updBar').onclick = () => location.reload();
+  });
+}
