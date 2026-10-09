@@ -978,7 +978,10 @@ async function renderCustomer(cid) {
       <ul class="list">${notes.map((n) => `<li class="note ${n.done ? 'done' : ''}"><div class="row" style="padding:0;align-items:flex-start"><div>${n.kind === 'promise' ? '🤝 ' : ''}${esc(n.text)}</div>
         <a class="btn small" title="${t('Share')}" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(noteShareText(c, n))}">📤</a></div>
         <small class="muted">${fmtDate(n.date)}${n.dueDate ? ' · ' + t('Remind') + ' ' + fmtDate(n.dueDate) : ''}${n.done ? ' · ' + t('Done') : ''}</small></li>`).join('')}</ul>
-      ${visits.length ? `<h3>⊘ ${t('Visits without payment')}</h3><ul class="list">${visits.map((v) => `<li class="note"><div>${reasonLabel(v.reason)}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''}${v.note ? ' · ' + esc(v.note) : ''}</div><small class="muted">${fmtDate(v.date)}</small></li>`).join('')}</ul>` : ''}`;
+      ${visits.length ? `<h3>⊘ ${t('Visits without payment')}</h3><ul class="list">${visits.map((v) => `<li class="note"><div>${reasonLabel(v.reason)}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''}${v.note ? ' · ' + esc(v.note) : ''}</div><small class="muted">${fmtDate(v.date)}</small></li>`).join('')}</ul>` : ''}
+      ${isAdmin() ? `<div class="contact" style="margin-top:18px"><button class="btn small danger" id="delCust">🗑 ${t('Delete customer')}</button></div>` : ''}`;
+    const dc = $('#delCust');
+    if (dc) dc.onclick = () => deleteCustomer(sid, cid, c, accs);
     $$('#geoBtn').forEach((gb) => (gb.onclick = () => {
       if (!navigator.geolocation) return toast(t('Location is not available on this phone'), true);
       if (c.geo && !confirm(t('Replace the saved location with where you are now?'))) return;
@@ -1071,6 +1074,44 @@ function renderPick(action) {
 }
 
 // ---------- account ledger ----------
+/**
+ * Admin: delete a customer added by mistake. Allowed only when the customer has no transactions:
+ * no sale, collection, discount or return on any account, and every account has a zero opening balance and balance.
+ * Removes the customer, accounts, notes, visits, pending orders (and their to-buy lines) and shared-index entries.
+ */
+async function deleteCustomer(sid, cid, c, accs) {
+  if (!isAdmin()) return;
+  const w = F.where('customerId', '==', cid);
+  const [sales, cols, rets, notes, visits, orders] = await Promise.all(['sales', 'collections', 'returns', 'notes', 'visits', 'orders']
+    .map((k) => F.fetchAll(F.query(F.sellerCol(sid, k), w))));
+  const money0 = accs.every((a) => !Number(a.openingBalance) && !Number(a.balance));
+  if (sales.length || cols.length || rets.length || !money0) {
+    alert(`${t('This customer has transactions and cannot be deleted.')}
+${t('Sales')}: ${sales.length} · ${t('Collections')}: ${cols.length} · ${t('Returns')}: ${rets.length}${money0 ? '' : ' · ' + t('Balance or opening balance is not zero')}`);
+    return;
+  }
+  const typed = prompt(`${t('Delete this customer?')}
+${c.name}
+${t('Accounts')}: ${accs.length} · ${t('Notes')}: ${notes.length} · ${t('Visits')}: ${visits.length} · ${t('Orders')}: ${orders.length}
+
+${t('Type the customer name to confirm')}`);
+  if (typed == null) return;
+  if (typed.trim().toLowerCase() !== String(c.name).trim().toLowerCase()) { toast(t('Name did not match. Not deleted.'), true); return; }
+  const b = F.writeBatch(F.db);
+  accs.forEach((a) => b.delete(F.sellerDoc(sid, 'accounts', a.id)));
+  notes.forEach((n) => b.delete(F.sellerDoc(sid, 'notes', n.id)));
+  visits.forEach((v) => b.delete(F.sellerDoc(sid, 'visits', v.id)));
+  orders.forEach((o) => { b.delete(F.sellerDoc(sid, 'orders', o.id)); b.delete(F.doc(F.db, 'demand', o.id)); });
+  (c.phoneHashes || []).forEach((h) => b.delete(F.doc(F.db, 'phoneIndex', `${h}_${sid}_${cid}`)));
+  b.delete(F.sellerDoc(sid, 'customers', cid));
+  const { id: _i, ...before } = c;
+  F.audit(b, S.user.uid, 'customer-delete', `sellers/${sid}/customers/${cid}`, { customer: before, accounts: accs.map((a) => ({ name: a.name, frequency: a.frequency })), notes: notes.length, visits: visits.length, orders: orders.length }, null);
+  F.commit(b, onWriteError);
+  delete S.customers[cid]; accs.forEach((a) => delete S.accounts[a.id]);
+  toast(t('Customer deleted'));
+  location.hash = '#/customers';
+}
+
 async function loadAccountData(sid, aid) {
   const w = F.where('accountId', '==', aid);
   const [sales, collections, returns] = await Promise.all([

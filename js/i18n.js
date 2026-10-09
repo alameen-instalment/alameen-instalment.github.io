@@ -559,6 +559,17 @@ const ML = {
   "This week": "ഈ ആഴ്ച",
   "This year": "ഈ വർഷം",
   "Choose dates": "തീയതി തിരഞ്ഞെടുക്കുക",
+  'Delete customer': 'കസ്റ്റമറെ ഡിലീറ്റ് ചെയ്യുക',
+  'This customer has transactions and cannot be deleted.': 'ഈ കസ്റ്റമർക്ക് ഇടപാടുകൾ ഉള്ളതിനാൽ ഡിലീറ്റ് ചെയ്യാൻ കഴിയില്ല.',
+  'Balance or opening balance is not zero': 'ബാലൻസ് അല്ലെങ്കിൽ പഴയ ബാലൻസ് പൂജ്യമല്ല',
+  'Delete this customer?': 'ഈ കസ്റ്റമറെ ഡിലീറ്റ് ചെയ്യണോ?',
+  'Type the customer name to confirm': 'ഉറപ്പാക്കാൻ കസ്റ്റമറുടെ പേര് ടൈപ്പ് ചെയ്യുക',
+  'Name did not match. Not deleted.': 'പേര് ശരിയായില്ല. ഡിലീറ്റ് ചെയ്തില്ല.',
+  'Customer deleted': 'കസ്റ്റമറെ ഡിലീറ്റ് ചെയ്തു',
+  'Collections': 'കളക്ഷനുകൾ',
+  'Returns': 'റിട്ടേണുകൾ',
+  'Notes': 'നോട്ടുകൾ',
+  'Visits': 'വിസിറ്റുകൾ',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();
