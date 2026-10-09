@@ -214,6 +214,8 @@ const routes = [
   [/^#\/app-settings$/, renderAppSettings],
   [/^#\/relogin\/([\w-]+)\/(handover|reset)$/, renderRelogin],
   [/^#\/backup$/, renderBackup],
+  [/^#\/records$/, renderRecords],
+  [/^#\/print-list$/, renderPrintList],
 ];
 const adminOnly = ['#/company-expenses', '#/users', '#/app-settings', '#/backup'];
 
@@ -1176,6 +1178,124 @@ async function makePdf({ title, subtitle, head, rows, foot = [], file }) {
   }
 }
 
+// ---------- printable list & per-customer statements ----------
+const recScope = () => { try { return sessionStorage.getItem('recScope') || 'all'; } catch { return 'all'; } };
+
+/** Books (seller customer sets) this login may export: own book for a seller; all or one for admin. */
+function recBooks(scope = recScope()) {
+  if (!isAdmin()) return [{ key: S.sid, name: S.profile.name }];
+  const all = sellers().map((x) => ({ key: x.id, name: x.name }));
+  return scope === 'all' ? all : all.filter((b) => b.key === scope);
+}
+
+async function loadBook(key, withHistory) {
+  const g = (n) => F.fetchAll(F.sellerCol(key, n));
+  const [customers, accounts, collections] = await Promise.all([g('customers'), g('accounts'), g('collections')]);
+  const out = { customers, accounts, collections };
+  if (withHistory) { const [sales, returns] = await Promise.all([g('sales'), g('returns')]); Object.assign(out, { sales, returns }); }
+  return out;
+}
+
+async function shareOrSave(blob, name, type) {
+  const file = new File([blob], name.replace(/[^\w.-]+/g, '_'), { type });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: file.name });
+  else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+}
+
+function renderRecords() {
+  setTitle(t('Print list & statements'), '#/menu');
+  const scopeSel = isAdmin() ? `<label>${t('Seller')}<select id="recScope"><option value="all">${t('All sellers')}</option>${sellers().map((x) => `<option value="${x.id}" ${recScope() === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>` : '';
+  view.innerHTML = `<div class="card form">${scopeSel}
+    <h3>🖨️ ${t('Customer balance list')}</h3>
+    <p class="muted small">${t('All customers with house no., lane, phone and balance of each open account, in route order. Print it or save as PDF once a month.')}</p>
+    <a class="btn primary" href="#/print-list">${t('Open printable list')}</a>
+    <h3>📊 ${t('Customer statements (Excel)')}</h3>
+    <p class="muted small">${t('One sheet per customer with every sale, advance, collection and return, and the running balance. A summary sheet comes first.')}</p>
+    <button class="btn primary" id="stmtX">${t('Download statements')}</button><div id="stS" class="muted small"></div></div>`;
+  const sel = $('#recScope'); if (sel) sel.onchange = () => { try { sessionStorage.setItem('recScope', sel.value); } catch {} };
+  $('#stmtX').onclick = async () => {
+    const btn = $('#stmtX'); btn.disabled = true;
+    try {
+      $('#stS').textContent = t('Collecting data…');
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+      const X = window.XLSX, wb = X.utils.book_new(), summary = [], used = new Set();
+      const books = recBooks();
+      const sheetName = (nm) => { let base = String(nm).replace(/[\[\]:*?/\\]/g, ' ').trim().slice(0, 28) || 'Customer', n = base, i = 2; while (used.has(n.toLowerCase())) n = `${base.slice(0, 26)} ${i++}`; used.add(n.toLowerCase()); return n; };
+      const typeName = { opening: 'Opening balance', sale: 'Sale', advance: 'Advance', collection: 'Collection', return: 'Return' };
+      const sheets = [];
+      for (const bk of books) {
+        const d = await loadBook(bk.key, true);
+        const custs = d.customers.sort((a, b) => a.name.localeCompare(b.name));
+        for (const c of custs) {
+          const accs = d.accounts.filter((a) => a.customerId === c.id).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          const due = L.round2(accs.filter((a) => a.status !== 'closed').reduce((s2, a) => s2 + (a.balance || 0), 0));
+          const name = sheetName(c.name);
+          summary.push({ Seller: bk.name, Customer: c.name, 'House no.': c.house || '', Lane: c.lane || '', Phone: c.phone || '', Accounts: accs.length, 'Balance due': due, Sheet: name });
+          const rows = [[c.name], [`${placeOf(c)}${placeOf(c) ? '  |  ' : ''}${phonesOf(c).map((p) => `${p.label ? p.label + ': ' : ''}${p.number}`).join(', ')}`], [`Seller: ${bk.name}   |   Printed: ${fmtDate(today())}`], []];
+          for (const a of accs) {
+            rows.push([`Account: ${a.name} (${a.frequency})${a.status === 'closed' ? ' — closed' : ''}`, '', '', '', '', '', `Balance: ${L.round2(a.balance || 0)}`]);
+            rows.push(['Date', 'Type', 'Details', 'Mode', 'Debit (+)', 'Credit (−)', 'Balance']);
+            const led = L.buildLedger(a.openingBalance, d.sales.filter((x) => x.accountId === a.id), d.collections.filter((x) => x.accountId === a.id), d.returns.filter((x) => x.accountId === a.id));
+            for (const r of led) {
+              const det = r.type === 'sale' || r.type === 'return' ? r.ref.items.map((i) => `${i.name} x${i.qty}`).join(', ') : r.ref?.note || '';
+              const mode = r.type === 'collection' || r.type === 'advance' ? (r.ref.mode === 'upi' ? 'UPI' : 'Cash') : '';
+              rows.push([fmtDate(r.date) || '-', typeName[r.type], det, mode, r.sign > 0 ? r.amount : '', r.sign < 0 ? r.amount : '', r.balance]);
+            }
+            rows.push([]);
+          }
+          const ws = X.utils.aoa_to_sheet(rows);
+          ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 34 }, { wch: 7 }, { wch: 11 }, { wch: 11 }, { wch: 12 }];
+          sheets.push([name, ws]);
+        }
+      }
+      const sws = X.utils.json_to_sheet(summary.length ? summary : [{ Customer: '—' }]);
+      sws['!cols'] = [{ wch: 12 }, { wch: 24 }, { wch: 9 }, { wch: 18 }, { wch: 13 }, { wch: 9 }, { wch: 12 }, { wch: 24 }];
+      X.utils.book_append_sheet(wb, sws, 'Summary');
+      sheets.forEach(([n, ws]) => X.utils.book_append_sheet(wb, ws, n));
+      const who = books.length === 1 ? books[0].name : 'all';
+      $('#stS').textContent = `${summary.length} ${t('customers')}`;
+      await shareOrSave(new Blob([X.write(wb, { bookType: 'xlsx', type: 'array' })]), `statements-${who}-${today()}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (err) { if (err.name !== 'AbortError') toast(t('Could not make the file') + ': ' + err.message, true); }
+    finally { btn.disabled = false; }
+  };
+}
+
+async function renderPrintList() {
+  setTitle(t('Customer balance list'), '#/records');
+  view.innerHTML = `<div class="loading">…</div>`;
+  const books = recBooks(), now = today(), dayOrder = [1, 2, 3, 6, 0];
+  let grand = 0, html = '';
+  for (const bk of books) {
+    const d = await loadBook(bk.key, false);
+    const lastPay = {};
+    d.collections.forEach((c) => { if (!lastPay[c.accountId] || c.date > lastPay[c.accountId]) lastPay[c.accountId] = c.date; });
+    const rowsOf = (c) => d.accounts.filter((a) => a.customerId === c.id && a.status !== 'closed' && L.round2(a.balance || 0) !== 0);
+    const groups = [...dayOrder.map((dd) => [dayLabel(dd), d.customers.filter((c) => (daysOf(c)[0] === undefined ? false : dayOrder.find((x) => daysOf(c).includes(x)) === dd)), dd]),
+      [t('No day'), d.customers.filter((c) => !daysOf(c).length), null]];
+    let bookTotal = 0, body = '';
+    for (const [label, custs, dd] of groups) {
+      const list = (dd === null ? custs.sort((a, b) => a.name.localeCompare(b.name)) : L.routeSort(custs, dd)).filter((c) => rowsOf(c).length);
+      if (!list.length) continue;
+      let gTotal = 0, n = 0;
+      const trs = list.map((c) => {
+        const accs = rowsOf(c); n++;
+        return accs.map((a, i) => { gTotal += a.balance || 0; return `<tr>${i === 0 ? `<td rowspan="${accs.length}">${n}</td><td rowspan="${accs.length}" class="pl">${esc(placeOf(c))}</td><td rowspan="${accs.length}"><b>${esc(c.name)}</b></td><td rowspan="${accs.length}">${esc(c.phone || '')}</td>` : ''}
+          <td>${esc(a.name)}</td><td class="num">${money(a.balance)}</td><td>${fmtDate(lastPay[a.id] || '') || '—'}</td></tr>`; }).join('');
+      }).join('');
+      bookTotal += gTotal;
+      body += `<h4>${esc(label)} · ${list.length} ${t('customers')} · ${money(gTotal)}</h4>
+        <table class="plist"><thead><tr><th>#</th><th>${t('House no.')} · ${t('Lane')}</th><th>${t('Name')}</th><th>${t('Phone')}</th><th>${t('Account')}</th><th>${t('Balance')}</th><th>${t('Last paid')}</th></tr></thead><tbody>${trs}</tbody></table>`;
+    }
+    grand += bookTotal;
+    html += `<section class="pbook"><h3>${esc(bk.name)} — ${t('Total due')} ${money(bookTotal)}</h3>${body || `<p class="muted">${t('No open balances')}</p>`}</section>`;
+  }
+  view.innerHTML = `<div class="noprint actions"><button class="btn primary" id="doPrint">🖨️ ${t('Print / Save as PDF')}</button>
+      <p class="muted small">${t('In the print screen choose your printer, or “Save as PDF”.')}</p></div>
+    <div class="printarea"><h2>${esc(APP_NAME)} — ${t('Customer balance list')}</h2><p class="muted small">${fmtDate(now)} · ${t('Open accounts with a balance only')}</p>
+    ${html}${books.length > 1 ? `<h3>${t('Grand total due')}: ${money(grand)}</h3>` : ''}</div>`;
+  $('#doPrint').onclick = () => window.print();
+}
+
 // ---------- menu & settings ----------
 function renderMenu() {
   setTitle(t('Menu'));
@@ -1185,6 +1305,7 @@ function renderMenu() {
     <li><a href="#/complaints">${t('Complaint items')} (${Object.keys(S.complaints).length})</a></li>
     ${isAdmin() ? `<li><a href="#/company-expenses">${t('Company expenses')}</a></li>
       <li><a href="#/users">${t('Users')}</a></li><li><a href="#/backup">${t('Backup (Excel)')}</a></li><li><a href="#/app-settings">${t('App settings')}</a></li>` : ''}
+    <li><a href="#/records">🖨️ ${t('Print list & statements')}</a></li>
     <li><a href="#/settings">${t('Language and password')}</a></li>
     <li><button class="linkbtn" id="lo">${t('Log out')} (${esc(S.profile.name)})</button></li></ul>
     <p class="muted small center">${navigator.onLine ? t('Online') : t('Offline — entries will sync later')}</p>`;

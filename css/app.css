@@ -214,3 +214,25 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .fchips.locked { opacity: .4; pointer-events: none; }
 [hidden] { display: none !important; }
 .list > li.arr .place { display: table; margin-bottom: 3px; }
+
+.printarea h2 { font-size: 18px; margin: 4px 0; }
+.printarea h3 { font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--ink); margin: 18px 0 6px; }
+.printarea h4 { font-size: 13px; margin: 12px 0 4px; color: var(--brand); }
+.plist { font-size: 12px; }
+.plist th, .plist td { padding: 5px 4px; text-align: left; border: 1px solid var(--line); }
+.plist td.num { text-align: right; white-space: nowrap; }
+.plist td.pl { font-weight: 700; white-space: nowrap; }
+@media print {
+  @page { size: A4; margin: 10mm; }
+  body { background: #fff; padding: 0; }
+  .top, #nav, .noprint, .toast, .updbar { display: none !important; }
+  main { padding: 0; max-width: none; }
+  .plist { font-size: 10.5px; border: 0; }
+  .plist tr { break-inside: avoid; }
+  .pbook { break-before: page; }
+  .pbook:first-of-type { break-before: auto; }
+}
+.plist { table-layout: fixed; }
+.plist th:nth-child(1) { width: 5%; } .plist th:nth-child(2) { width: 17%; } .plist th:nth-child(3) { width: 22%; }
+.plist th:nth-child(4) { width: 16%; } .plist th:nth-child(5) { width: 14%; } .plist th:nth-child(6) { width: 13%; } .plist th:nth-child(7) { width: 13%; }
+.plist td { overflow-wrap: anywhere; }

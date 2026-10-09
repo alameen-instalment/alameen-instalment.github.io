@@ -274,6 +274,22 @@ const ML = {
   'Replace the saved location with where you are now?': 'സേവ് ചെയ്ത ലൊക്കേഷൻ മാറ്റി ഇപ്പോൾ നിൽക്കുന്ന സ്ഥലം വെക്കണോ?',
   'Getting location…': 'ലൊക്കേഷൻ എടുക്കുന്നു…',
   'Could not get location': 'ലൊക്കേഷൻ കിട്ടിയില്ല',
+  'Print list & statements': 'പ്രിന്റ് ലിസ്റ്റും സ്റ്റേറ്റ്മെന്റുകളും',
+  'All sellers': 'എല്ലാ സെല്ലർമാരും',
+  'Customer balance list': 'കസ്റ്റമർ ബാക്കി ലിസ്റ്റ്',
+  'All customers with house no., lane, phone and balance of each open account, in route order. Print it or save as PDF once a month.': 'എല്ലാ കസ്റ്റമർമാരും വീട്ടുനമ്പർ, ലെയിൻ, ഫോൺ, ഓരോ അക്കൗണ്ടിന്റെയും ബാക്കി സഹിതം, റൂട്ട് ക്രമത്തിൽ. മാസത്തിൽ ഒരിക്കൽ പ്രിന്റ് ചെയ്യുകയോ PDF ആയി സേവ് ചെയ്യുകയോ ചെയ്യുക.',
+  'Open printable list': 'പ്രിന്റ് ലിസ്റ്റ് തുറക്കുക',
+  'Customer statements (Excel)': 'കസ്റ്റമർ സ്റ്റേറ്റ്മെന്റുകൾ (Excel)',
+  'One sheet per customer with every sale, advance, collection and return, and the running balance. A summary sheet comes first.': 'ഓരോ കസ്റ്റമർക്കും ഓരോ ഷീറ്റ്: എല്ലാ സെയിൽ, അഡ്വാൻസ്, കളക്ഷൻ, റിട്ടേൺ, ഓരോന്നിനും ശേഷമുള്ള ബാക്കി. ആദ്യം ഒരു സംഗ്രഹ ഷീറ്റ്.',
+  'Download statements': 'സ്റ്റേറ്റ്മെന്റുകൾ ഡൗൺലോഡ് ചെയ്യുക',
+  'Could not make the file': 'ഫയൽ ഉണ്ടാക്കാൻ കഴിഞ്ഞില്ല',
+  'Account': 'അക്കൗണ്ട്',
+  'Last paid': 'അവസാനം അടച്ചത്',
+  'No open balances': 'ബാക്കിയുള്ള അക്കൗണ്ടുകൾ ഇല്ല',
+  'Print / Save as PDF': 'പ്രിന്റ് / PDF ആയി സേവ്',
+  'In the print screen choose your printer, or “Save as PDF”.': 'പ്രിന്റ് സ്ക്രീനിൽ പ്രിന്റർ തിരഞ്ഞെടുക്കുക, അല്ലെങ്കിൽ “Save as PDF”.',
+  'Open accounts with a balance only': 'ബാക്കിയുള്ള അക്കൗണ്ടുകൾ മാത്രം',
+  'Grand total due': 'ആകെ ബാക്കി',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();
