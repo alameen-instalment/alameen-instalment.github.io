@@ -699,13 +699,13 @@ async function compressImage(file, maxSide = 1280) {
 const RETIRED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
 /** Pick the newest Flash model this key can use (used when the saved model is retired). */
-async function pickModel(key) {
+async function pickModel(key, lite = false) {
   const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
   if (!r.ok) return null;
   const names = ((await r.json()).models || [])
     .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
     .map((m) => m.name.replace('models/', ''))
-    .filter((n) => /^gemini-[\d.]+-flash$/.test(n));
+    .filter((n) => (lite ? /^gemini-[\d.]+-flash-lite$/ : /^gemini-[\d.]+-flash$/).test(n));
   names.sort((x, y) => parseFloat(y.split('-')[1]) - parseFloat(x.split('-')[1]));
   return names[0] || null;
 }
@@ -719,14 +719,22 @@ async function gemini(body) {
   const call = (m) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify(body),
   });
+  const remember = (m) => { S.settings.geminiModel = m; if (isAdmin()) { const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'settings', 'main'), { geminiModel: m }, { merge: true }); F.commit(b, () => {}); } };
   let res = await call(model);
   if (res.status === 404) {
     const alt = await pickModel(key);
-    if (alt && alt !== model) {
-      res = await call(alt);
-      if (res.ok) { S.settings.geminiModel = alt; if (isAdmin()) { const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'settings', 'main'), { geminiModel: alt }, { merge: true }); F.commit(b, () => {}); } }
+    if (alt && alt !== model) { res = await call(alt); if (res.ok) remember(alt); }
+  }
+  // Free-tier limit hit on this model: try the lighter models, which usually have higher free limits.
+  if (res.status === 429) {
+    const lite = await pickModel(key, true);
+    for (const m of [...new Set(['gemini-flash-lite-latest', lite].filter((x) => x && x !== model))]) {
+      res = await call(m);
+      if (res.ok) { remember(m); break; }
+      if (res.status !== 429 && res.status !== 404) break;
     }
   }
+  if (res.status === 429) throw new Error(t('The free AI limit is used up for now. Wait a minute and try again; if it keeps happening, today\'s free limit is over.'));
   if (!res.ok) throw new Error(`AI ${res.status}: ${(await res.text()).replace(/\s+/g, ' ').slice(0, 300)}`);
   return res.json();
 }
