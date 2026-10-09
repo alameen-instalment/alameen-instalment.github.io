@@ -227,6 +227,9 @@ const ML = {
   'Connect to the internet first': 'ആദ്യം ഇന്റർനെറ്റ് ഓൺ ചെയ്യുക',
   'Collecting data…': 'ഡാറ്റ ശേഖരിക്കുന്നു…',
   'Backup failed': 'ബാക്കപ്പ് പരാജയപ്പെട്ടു',
+  'No internet connection': 'ഇന്റർനെറ്റ് കണക്ഷൻ ഇല്ല',
+  'Too many tries. Wait a few minutes and try again.': 'വളരെയധികം ശ്രമങ്ങൾ. കുറച്ച് മിനിറ്റ് കാത്തിരുന്ന് വീണ്ടും ശ്രമിക്കുക.',
+  'Login failed': 'ലോഗിൻ പരാജയപ്പെട്ടു',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();

@@ -145,7 +145,8 @@ function renderLogin() {
   <form id="loginForm" class="card login">
     <div class="brand">${esc(APP_NAME)}</div>
     <label>${t('Username')}<input name="u" autocomplete="username" autocapitalize="none" required></label>
-    <label>${t('Password')}<input name="p" type="password" autocomplete="current-password" required></label>
+    <label>${t('Password')}<input name="p" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required></label>
+    <div id="loginErr" class="loginerr"></div>
     <button class="btn primary" type="submit">${t('Log in')}</button>
     <button class="btn ghost" type="button" id="langBtn">${getLang() === 'ml' ? 'English' : 'മലയാളം'}</button>
   </form>`;
@@ -153,7 +154,16 @@ function renderLogin() {
   $('#loginForm').onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
-    try { await F.login(f.u.value, f.p.value); } catch (err) { toast(t('Wrong username or password'), true); }
+    try { await F.login(f.u.value, f.p.value); } catch (err) {
+      const code = err.code || err.message || '';
+      const msg = /invalid-credential|invalid-login|wrong-password|user-not-found|invalid-email/.test(code) ? t('Wrong username or password')
+        : /network-request-failed/.test(code) ? t('No internet connection')
+        : /too-many-requests/.test(code) ? t('Too many tries. Wait a few minutes and try again.')
+        : /user-disabled/.test(code) ? t('This login is not active')
+        : t('Login failed');
+      $('#loginErr').innerHTML = `${esc(msg)}<small>${esc(code)} · ${esc(F.emailOf(f.u.value))}</small>`;
+      toast(msg, true);
+    }
   };
 }
 
