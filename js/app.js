@@ -362,7 +362,6 @@ async function renderHome() {
     </div>
     ${alerts.map(alertCard).join('')}
     ${routeTile(new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), new Set(visits.map((v) => v.customerId)))}
-    ${mealCard()}
     ${deliver.length ? `<a class="banner" href="#/orders" style="display:block;text-decoration:none"><b>🚚 ${t("Today's deliveries")}: ${deliver.length}</b>
       <span class="small muted">${esc(Object.entries(deliver.flatMap((o) => o.items).reduce((m, i) => ((m[i.name] = (m[i.name] || 0) + Number(i.qty || 0)), m), {})).map(([n, q]) => `${n} × ${q}`).join(', '))}</span></a>` : ''}
     <div class="grid2">
@@ -375,6 +374,7 @@ async function renderHome() {
     <h3>${t("Today's tasks")} ${due.length ? `<span class="pill bad">${due.length}</span>` : ''}</h3>
     <ul class="list">${due.map(noteRow).join('') || `<li class="muted">${t('Nothing due')}</li>`}</ul>
     ${soon.length ? `<h3>${t('Upcoming')}</h3><ul class="list">${soon.map(noteRow).join('')}</ul>` : ''}
+    <div id="mealw">${mealCard()}</div>
     <h3>${t('Calendar')}</h3><div id="calw"></div>`;
   bindSellerBar();
   bindAlerts();
@@ -420,9 +420,19 @@ function routeTile(paid, visited) {
 }
 
 // ---------- dinner order (Sat, Sun, Mon, Tue; sellers only) ----------
-const MEAL_DAYS = [6, 0, 1, 2];
+const MEAL_DAYS = [6, 0, 1, 2], MEAL_FROM = 18, MEAL_TO = 22; // 6 pm – 10 pm
+const mealOpen = () => { const h = new Date().getHours(); return MEAL_DAYS.includes(todayDay()) && h >= MEAL_FROM && h < MEAL_TO; };
+// Show / hide the card at 6 pm and 10 pm while Home stays open.
+let mealShown = null;
+setInterval(() => {
+  const w = $('#mealw'); if (!w || !S.profile || isAdmin()) return;
+  const open = mealOpen(); if (open === mealShown) return;
+  if (open && mealsDay !== today()) subscribeMeals();
+  w.innerHTML = mealCard(); bindMeal();
+}, 30000);
 function mealCard() {
-  if (isAdmin() || !MEAL_DAYS.includes(todayDay())) return '';
+  mealShown = mealOpen();
+  if (isAdmin() || !mealShown) return '';
   const me = S.profile.sellerKey || S.user.uid, list = sellers();
   const msgs = list.map((x) => ({ x, m: S.meals[`${today()}_${x.id}`] }));
   const allIn = list.length && msgs.every((r) => r.m);
