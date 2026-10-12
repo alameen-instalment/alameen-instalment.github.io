@@ -381,3 +381,9 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .mealmsg > div small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
 .mealmsg.wait { opacity: .6; }
 .mealmsg.wait > div { background: none; border-style: dashed; }
+
+.onote { font-size: 13px; margin-top: 4px; padding: 4px 8px; border-radius: 8px; background: var(--warn-soft); color: var(--ink); white-space: normal; }
+.linkbtn.obal { display: block; color: var(--accent-text); font-size: 13px; font-weight: 600; margin-top: 6px; }
+.grid2 > .wide { grid-column: span 2; }
+.pill.pause { background: var(--card2); color: var(--muted); font-size: 11px; padding: 1px 6px; vertical-align: middle; }
+.infoline { font-size: 13px; margin: 4px 0; padding: 6px 8px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); }

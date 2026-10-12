@@ -131,6 +131,7 @@ export function preferredMode(counts) { // scrap is never the default
 export function sellerReport({ sales = [], collections = [], returns = [], expenses = [] }) {
   const salesValue = round2(sales.reduce((s, x) => s + x.saleValue, 0));
   const salesCost = round2(sales.reduce((s, x) => s + x.cost, 0));
+  const cashSales = round2(sales.filter((x) => x.cash).reduce((s, x) => s + x.saleValue, 0));
   const credited = returns.filter((r) => r.credited);
   const returnValue = round2(credited.reduce((s, r) => s + r.amount, 0));
   const returnCost = round2(credited.reduce((s, r) => s + r.cost, 0));
@@ -145,7 +146,7 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   const collectedCash = sumBy(collections, 'cash'), collectedUpi = sumBy(collections, 'upi'), collectedScrap = sumBy(collections, 'scrap');
   const expenseCash = sumBy(expenses, 'cash'), expenseUpi = sumBy(expenses, 'upi');
   return {
-    salesValue, returnValue, collected, collectedCash, collectedUpi, collectedScrap, discount, booked, realised,
+    salesValue, cashSales, returnValue, collected, collectedCash, collectedUpi, collectedScrap, discount, booked, realised,
     expense, expenseCash, expenseUpi, cashInHand: round2(collectedCash - expenseCash),
     net: round2(realised - expense), salesCount: sales.length,
   };
@@ -167,7 +168,7 @@ export function companyReport(sellerReports, companyExpenses = [], scrapLosses =
   const realised = sum('realised');
   const personal = sum('expense');
   return {
-    salesValue: sum('salesValue'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'), discount: sum('discount'),
+    salesValue: sum('salesValue'), cashSales: sum('cashSales'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'), discount: sum('discount'),
     booked: sum('booked'), realised, personalExpense: personal, companyExpense, companyExpenseCash, companyExpenseUpi, scrap,
     scrapSold, scrapSoldCredited, scrapGain,
     cashInHand: round2(sum('cashInHand') - companyExpenseCash + scrapSoldCash),
@@ -436,19 +437,28 @@ export function customerScore({ accounts = [], sales = [], collections = [], pro
     (paidBy[`${c.accountId}|${a.ref}`] ||= []).push({ t: dayN(c.date), amount: a.amount });
   }
   const items = [];
+  // paused (inactive) periods per account, as day numbers; an open pause runs to "now"
+  const pausesOf = (a) => (a.pauses || []).filter((p) => p && p.from).map((p) => ({ from: dayN(p.from), to: p.to ? dayN(p.to) : Infinity }));
   for (const a of accounts) {
     const opened = a.date || (a.createdAt ? new Date(a.createdAt + 330 * 60000).toISOString().slice(0, 10) : today);
-    if (Number(a.openingBalance) > 0) items.push({ key: `${a.id}|opening`, acc: a, start: dayN(opened), amount: Number(a.openingBalance), adv: 0 });
+    if (Number(a.openingBalance) > 0) items.push({ key: `${a.id}|opening`, acc: a, start: dayN(opened), amount: Number(a.openingBalance), adv: 0, pauses: pausesOf(a) });
   }
   const accById = Object.fromEntries(accounts.map((a) => [a.id, a]));
   for (const s of sales) {
     const acc = accById[s.accountId]; if (!acc) continue;
     const amount = round2((s.saleValue || 0) - (s.creditedValue || 0));
-    if (amount > 0) items.push({ key: `${s.accountId}|${s.id}`, acc, start: dayN(s.date), amount, adv: Math.min(amount, Number(s.advance) || 0) });
+    if (amount > 0) items.push({ key: `${s.accountId}|${s.id}`, acc, start: dayN(s.date), amount, adv: Math.min(amount, Number(s.advance) || 0), pauses: pausesOf(acc) });
   }
   if (!items.length) return { score: null, band: 'new', reason: 'no sales' };
   const paidAt = (it, t) => round2((paidBy[it.key] || []).filter((p) => p.t <= t).reduce((s, p) => s + p.amount, 0));
-  const expectedAt = (it, t) => (t < it.start ? 0 : round2(it.adv + (it.amount - it.adv) * Math.min(1, (t - it.start) / 365)));
+  // days the plan has been running for an item up to t, leaving out the days its account was paused
+  const activeDays = (it, t) => {
+    if (t <= it.start) return 0;
+    let off = 0; for (const p of it.pauses || []) off += Math.max(0, Math.min(t, p.to) - Math.max(it.start, p.from));
+    return Math.max(0, t - it.start - off);
+  };
+  const pausedNow = (it) => (it.pauses || []).some((p) => p.to === Infinity && p.from <= T);
+  const expectedAt = (it, t) => (t < it.start ? 0 : round2(it.adv + (it.amount - it.adv) * Math.min(1, activeDays(it, t) / 365)));
   for (const it of items) {
     it.paid = paidAt(it, T); it.open = it.paid < it.amount - 0.5;
     if (!it.open) { // day it was finished
@@ -482,11 +492,11 @@ export function customerScore({ accounts = [], sales = [], collections = [], pro
   }
   const nowBehind = open.length ? behindDays(T) : 0;
   let cur = markOf(nowBehind);
-  if (open.some((i) => T - i.start > 365)) cur *= 0.25;
+  if (open.some((i) => activeDays(i, T) > 365)) cur *= 0.25;
   // speed: pace ratio vs plan; on plan = 0.5, twice the pace (or paid off within half a year) = 1
   let sw = 0, ss = 0;
   for (const it of items) {
-    const age = (it.open ? T : it.doneAt) - it.start;
+    const age = it.open ? activeDays(it, T) : it.doneAt - it.start; // paid off: real days taken
     if (it.open && age < 28) continue;
     const timeFrac = Math.max(1 / 365, Math.min(1, age / 365));
     const paidFrac = Math.min(1, (it.open ? it.paid : it.amount) / it.amount);
@@ -508,7 +518,7 @@ export function customerScore({ accounts = [], sales = [], collections = [], pro
   let capped = '';
   if (nowBehind >= capR && score > 59) { score = 59; capped = 'red'; } else if (nowBehind >= capY && score > 79) { score = 79; capped = 'yellow'; }
   // plan figures for the customer page
-  const rateDay = open.reduce((s, it) => s + (it.amount - it.adv) / 365, 0);
+  const rateDay = open.filter((it) => !pausedNow(it)).reduce((s, it) => s + (it.amount - it.adv) / 365, 0);
   const expectedNow = round2(open.reduce((s, it) => s + expectedAt(it, T), 0));
   const paidNow = round2(open.reduce((s, it) => s + it.paid, 0));
   const last90 = collections.filter((c) => c.kind !== 'discount' && c.kind !== 'advance' && dayN(c.date) > T - 90).reduce((s, c) => s + c.amount, 0);
@@ -537,4 +547,19 @@ export function foodEmoji(text) {
   if (has('പൊറോട്ട', 'porotta', 'parotta', 'ചപ്പാത്തി', 'chapathi', 'chapati', 'ദോശ', 'dosa', 'അപ്പം', 'appam', 'പുട്ട്', 'puttu')) return '🫓';
   if (has('ജ്യൂസ്', 'juice', 'ചായ', 'tea', 'coffee', 'കാപ്പി', 'shake')) return '🥤';
   return '🍽️';
+}
+
+/**
+ * Cash sale (walk-in buyer, no account): split what was paid into payment entries by mode.
+ * Each entry's profit is its share of the sale's margin, so realised profit is booked at once.
+ * pays: [{mode, amount, scrapItems?}] (zero amounts dropped). Returns [{mode, amount, profit, scrapItems?}].
+ */
+export function cashPayments(value, cost, pays = []) {
+  const share = value > 0 ? (value - cost) / value : 0;
+  return pays.filter((p) => round2(p.amount) > 0).map((p) => ({ ...p, amount: round2(p.amount), profit: round2(round2(p.amount) * share) }));
+}
+
+/** Refund for a cash-sale return: a negative payment entry that takes back the returned items' own margin. */
+export function cashRefund(amount, cost, mode) {
+  return { mode, amount: -round2(amount), profit: -round2(amount - cost) };
 }

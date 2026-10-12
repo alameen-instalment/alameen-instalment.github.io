@@ -197,6 +197,9 @@ function live() {
 }
 
 const accountsOf = (cid) => Object.values(S.accounts).filter((a) => a.customerId === cid);
+// A customer is "paused" when every open account is inactive: kept in the route list (marked ⏸) but not counted.
+const pausedCust = (cid) => { const o = accountsOf(cid).filter((a) => a.status !== 'closed'); return o.length > 0 && o.every((a) => a.inactive); };
+const pauseMark = (cid) => (pausedCust(cid) ? `<span class="pill pause" title="${t('Inactive')}">⏸</span> ` : '');
 const openBalance = (cid) => L.round2(accountsOf(cid).filter((a) => a.status !== 'closed').reduce((s, a) => s + (a.balance || 0), 0));
 
 // ---------- auth ----------
@@ -292,6 +295,9 @@ const routes = [
   [/^#\/order-edit\/(\w+)$/, (oid) => renderOrderForm(null, oid)],
   [/^#\/deliver\/(\w+)$/, renderDeliver],
   [/^#\/close-day$/, renderCloseDay],
+  [/^#\/cash-sale$/, renderCashSale],
+  [/^#\/cash-sales$/, renderCashSales],
+  [/^#\/cash-return\/(\w+)$/, renderCashReturn],
 ];
 const adminOnly = ['#/company-expenses', '#/users', '#/app-settings', '#/backup', '#/categories', '#/scrap'];
 
@@ -367,8 +373,9 @@ async function renderHome() {
     <div class="grid2">
       <a class="tile primary" href="#/pick/collect">+ ${t('Collection')}</a>
       <a class="tile" href="#/pick/sale">+ ${t('New sale')}</a>
+      <a class="tile" href="#/cash-sale">🛒 ${t('Cash sale')}</a>
       <a class="tile" href="#/expenses">+ ${t('Expense')}</a>
-      <a class="tile" href="#/purchase/photo">📷 ${t('Stock from bill')}</a>
+      <a class="tile wide" href="#/purchase/photo">📷 ${t('Stock from bill')}</a>
     </div>
     <a class="btn ghost" href="#/close-day">${closed ? '✓ ' + t('Day closed — view') : '🌙 ' + t('Close today')}</a>
     <h3>${t("Today's tasks")} ${due.length ? `<span class="pill bad">${due.length}</span>` : ''}</h3>
@@ -408,9 +415,9 @@ function routeTile(paid, visited) {
     ? `${dayLabel(plan.change.day)} ${t('route cancelled today')}${plan.change.events ? ` (${esc(plan.change.events)})` : ''}`
     : `${dayLabel(plan.change.day)} ${t('route moved to')} ${fmtDate(plan.change.toDate)}`) : '';
   if (!plan.days.length) return `<div class="routetile off">${changeNote || t('No route today')}</div>`;
-  const groups = todayRouteList(plan), all = groups.flatMap((g) => g.list);
+  const groups = todayRouteList(plan), every = groups.flatMap((g) => g.list), all = every.filter((c) => !pausedCust(c.id));
   const done = all.filter((c) => paid.has(c.id) || visited.has(c.id)).length;
-  const due = all.reduce((s, c) => s + openBalance(c.id), 0);
+  const due = every.reduce((s, c) => s + openBalance(c.id), 0);
   const label = groups.map((g) => dayLabel(g.day) + (g.moved ? ` (${t('moved')})` : '')).join(' + ');
   return `<button class="routetile" id="routeTile">
     <div class="rt-h"><span>🛵 ${t("Today's route")} · ${label}</span><em>${t('Open')}</em></div>
@@ -517,7 +524,7 @@ async function mountCalendar(el) {
     ]);
     const add = (d, item) => (work[d] ||= []).push(item);
     const byDay = {};
-    cols.filter((c) => c.kind !== 'discount').forEach((c) => { const x = (byDay[c.date] ||= { n: 0, amt: 0 }); x.n++; x.amt += c.amount; });
+    cols.filter((c) => c.kind !== 'discount').forEach((c) => { const x = (byDay[c.date] ||= { n: 0, amt: 0 }); if (c.kind !== 'refund') x.n++; x.amt += c.amount; });
     Object.entries(byDay).forEach(([d, x]) => add(d, { k: 'col', html: `💰 ${t('Collected')} <b>${money(L.round2(x.amt))}</b> <small>(${x.n})</small>` }));
     orders.filter((o) => o.status !== 'cancelled').forEach((o) => add(o.deliveryDate, { k: 'ord', html: `🚚 <a href="#/customer/${o.customerId}">${esc(o.customerName)}</a> · ${esc(o.items.map((i) => `${i.name} × ${i.qty}`).join(', '))}${o.status === 'delivered' ? ' ✓' : ''}` }));
     notes.filter((n) => n.dueDate && n.dueDate >= first && n.dueDate <= last).forEach((n) => add(n.dueDate, { k: n.kind === 'promise' ? 'pro' : 'rem', html: `${n.kind === 'promise' ? '🤝' : '🔔'} <a href="#/customer/${n.customerId}">${esc(n.customerName || '')}</a> · ${esc(n.text)}` }));
@@ -740,13 +747,16 @@ function renderCustomers() {
         const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), paid = paidToday.has(c.id), nopay = !paid && visitedToday.has(c.id);
         const days = daysOf(c).map(dayLabel).join(' ');
         return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''}">
-          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${esc(c.name)}</b>${scoreBadges(c)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
     if (!n && !note) $('#clist').innerHTML = `<li class="muted">${t('No customers here')}</li>`;
-    const due = list.reduce((s, c) => s + openBalance(c.id), 0), seen = list.filter((c) => paidToday.has(c.id)).length, nv = list.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
-    $('#ctotal').textContent = `${list.length} ${t('customers')} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seen} ${t('paid today')}${nv ? ` · ⊘ ${nv}` : ''}` : ''}`;
+    const due = list.reduce((s, c) => s + openBalance(c.id), 0);
+    const np = byRoute ? list.filter((c) => pausedCust(c.id)).length : 0;
+    const counted = byRoute ? list.filter((c) => !pausedCust(c.id)) : list;
+    const seenC = counted.filter((c) => paidToday.has(c.id)).length, nvC = counted.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
+    $('#ctotal').textContent = `${list.length - np} ${t('customers')}${np ? ` (+ ⏸ ${np})` : ''} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seenC} ${t('paid today')}${nvC ? ` · ⊘ ${nvC}` : ''}` : ''}`;
   };
   view.innerHTML = sellerBar() + receiptBar(true) + `
     <div class="fchips" id="dayf"></div>
@@ -844,7 +854,12 @@ function renderCustomerForm(id) {
   const c = id ? S.customers[id] : null;
   if (id && !c) return go('#/customers');
   setTitle(c ? t('Edit customer') : t('New customer'), true);
-  view.innerHTML = `<form id="cf" class="form">
+  const pend = c ? null : readPending();
+  const pendPaid = pend ? L.round2(pend.pays.reduce((s2, p) => s2 + p.amount, 0)) : 0;
+  view.innerHTML = `${pend ? `<div class="banner" id="pendBox"><b>🛒 ${t('Cash sale')} ${money(pend.value)} · ${t('Paid')} ${money(pendPaid)} · ${t('Balance')} ${money(L.round2(pend.value - pendPaid))}</b>
+      <span class="small">${esc(pend.lines.map((l) => `${l.name} × ${l.qty}`).join(', '))}</span>
+      <span class="small muted">${t('The sale and what was paid go into the first account below.')}</span>
+      <div class="contact"><button type="button" class="btn small" id="pendX">${t('Cancel this sale')}</button></div></div>` : ''}<form id="cf" class="form">
     <label>${t('Name')}<input name="name" value="${esc(c?.name)}" required></label>
     <div class="two place-in">
       <label>${t('House no.')}<input name="house" value="${esc(c?.house)}" autocapitalize="characters"></label>
@@ -864,10 +879,26 @@ function renderCustomerForm(id) {
   let n = 1, pn = $$('.phonerow').length;
   if (!c) $('#addAcc').onclick = () => $('#accs').insertAdjacentHTML('beforeend', accountRowHtml(n++));
   // Number already a customer of another seller? Warn (never block) so the seller can ask them first.
+  let cashSalesCache = null;
+  if (pend) {
+    const f0 = $('#cf'); if (pend.name) f0.name.value = pend.name;
+    const pn0 = $('.phonerow [name=pn]'); if (pn0 && pend.phone) pn0.value = pend.phone;
+    $('#pendX').onclick = () => { if (!confirm(t('Cancel this cash sale? Nothing is saved.'))) return; try { sessionStorage.removeItem('pendingCash'); } catch {} go('#/home'); };
+  }
   const checkPhones = async () => {
     const hashes = await hashesOf($$('.phonerow [name=pn]').map((i) => ({ number: i.value })));
     const others = othersOf({ phoneHashes: hashes }, S.sid);
-    $('#dupWarn').innerHTML = others.map((o) => `<div class="warnline">📞 ${t('This number is also a customer of')} <b>${esc(o.name)}</b>${o.score != null ? ` (${t('Score')} ${o.score})` : ''}${o.ban ? ` · 🚫 ${esc(o.ban)}` : ''}. ${t('Ask them before adding.')}</div>`).join('');
+    let before = '';
+    if (!c) { // the same number bought before as a walk-in cash sale (own book only)
+      const nums = new Set($$('.phonerow [name=pn]').map((i) => last10(i.value)).filter((x) => x.length === 10));
+      if (nums.size) {
+        cashSalesCache ||= F.fetchAll(F.query(F.sellerCol(S.sid, 'sales'), F.where('cash', '==', true))).catch(() => []);
+        const hits = (await cashSalesCache).filter((x) => nums.has(last10(x.buyerPhone))).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 3);
+        before = hits.map((x) => `<div class="infoline">🛒 ${t('Bought before as a cash sale')}: ${fmtDate(x.date)} · ${esc(cashItems(x))} · ${money(x.saleValue)}</div>`).join('');
+      }
+    }
+    const dw = $('#dupWarn'); if (!dw) return; // the form was already saved and closed
+    dw.innerHTML = others.map((o) => `<div class="warnline">📞 ${t('This number is also a customer of')} <b>${esc(o.name)}</b>${o.score != null ? ` (${t('Score')} ${o.score})` : ''}${o.ban ? ` · 🚫 ${esc(o.ban)}` : ''}. ${t('Ask them before adding.')}</div>`).join('') + before;
   };
   const bindPhones = () => {
     $$('[data-prm]').forEach((b) => (b.onclick = () => { if ($$('.phonerow').length > 1) b.parentElement.remove(); checkPhones(); }));
@@ -878,6 +909,7 @@ function renderCustomerForm(id) {
   checkPhones();
   $('#cf').onsubmit = async (e) => {
     e.preventDefault();
+    const sb = $('#cf button[type=submit]'); if (sb.disabled) return; sb.disabled = true;
     const f = e.target, sid = S.sid, b = F.writeBatch(F.db);
     const def = $('input[name=pdef]:checked', f)?.value;
     const phones = $$('.phonerow', f).map((r) => ({ label: $('[name=pl]', r).value.trim(), number: $('[name=pn]', r).value.trim(), primary: $('[name=pdef]', r).value === def }))
@@ -899,15 +931,27 @@ function renderCustomerForm(id) {
     }
     const ccol = F.sellerCol(sid, 'customers');
     const cid = F.newId(ccol);
-    b.set(F.doc(ccol, cid), { ...data, addressHistory: [], createdAt: Date.now() });
+    const pendNow = pend ? readPending() : null;
+    if (pendNow && !$$('.acc-row').length) { sb.disabled = false; return toast(t('Add an account for the cash sale balance'), true); }
+    const mc = pendNow ? { modeCounts: { cash: pendNow.pays.filter((p) => p.mode === 'cash').length, upi: pendNow.pays.filter((p) => p.mode === 'upi').length } } : {};
+    b.set(F.doc(ccol, cid), { ...data, ...mc, addressHistory: [], createdAt: Date.now() });
     writeIndex(b, sid, cid, {}, hashes);
-    $$('.acc-row').forEach((row) => {
-      const acol = F.sellerCol(sid, 'accounts');
-      b.set(F.doc(acol, F.newId(acol)), newAccountDoc(cid, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value)));
+    let firstAid = null;
+    $$('.acc-row').forEach((row, i) => {
+      const acol = F.sellerCol(sid, 'accounts'), aid = F.newId(acol);
+      let doc = newAccountDoc(cid, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value));
+      if (i === 0 && pendNow) doc = applyPendingSale(b, sid, cid, aid, doc, pendNow, data.name);
+      if (i === 0) firstAid = aid;
+      b.set(F.doc(acol, aid), doc);
     });
+    if (pendNow) {
+      F.audit(b, S.user.uid, 'cash-sale-to-customer', `sellers/${sid}/customers/${cid}`, null, { value: pendNow.value, paid: L.round2(pendNow.pays.reduce((s2, p) => s2 + p.amount, 0)) });
+      try { sessionStorage.removeItem('pendingCash'); } catch {}
+    }
     F.commit(b, onWriteError);
     toast(t('Saved'));
-    go(`#/customer/${cid}`);
+    if (pendNow) rescoreSoon(cid);
+    go(pendNow ? `#/account/${cid}/${firstAid}` : `#/customer/${cid}`);
   };
 }
 
@@ -971,10 +1015,10 @@ async function renderCustomer(cid) {
       ${phonesOf(c).length > 1 || phonesOf(c)[0]?.label ? `<ul class="phonelist">${phonesOf(c).map((p) => `<li>${p.primary ? '<span class="star on">★</span>' : '<span class="star">☆</span>'}
         <span>${esc(p.label || '')}</span><b>${esc(p.number)}</b><a class="btn small" href="tel:${esc(p.number)}">📞</a></li>`).join('')}</ul>` : ''}
       ${ph ? `<div class="small" style="margin-top:6px"><a href="sms:${esc(ph)}">✉️ ${t('SMS')}</a></div>` : ''}
-      ${orders.length ? `<h3>🚚 ${t('Orders')}</h3><ul class="list">${orders.map((o) => `<li><a class="row" href="#/order-edit/${o.id}"><div><b>${esc(o.items.map((i) => `${i.name} × ${i.qty}`).join(', '))}</b><small>${t('Deliver on')} ${fmtDate(o.deliveryDate)}${o.note ? ' · ' + esc(o.note) : ''}</small></div><span class="pill ${o.deliveryDate <= today() ? 'bad' : ''}">${shortDate(o.deliveryDate)}</span></a></li>`).join('')}</ul>` : ''}
+      ${orders.length ? `<h3>🚚 ${t('Orders')}</h3><ul class="list">${orders.map((o) => `<li><a class="row" href="#/order-edit/${o.id}"><div><b>${esc(o.items.map((i) => `${i.name} × ${i.qty}`).join(', '))}</b><small>${t('Deliver on')} ${fmtDate(o.deliveryDate)}</small>${noteLine(o)}</div><span class="pill ${o.deliveryDate <= today() ? 'bad' : ''}">${shortDate(o.deliveryDate)}</span></a></li>`).join('')}</ul>` : ''}
       <h3>${t('Accounts')}</h3>
       <ul class="list">${accs.map((a) => `<li><a class="row ${a.status === 'closed' ? 'closed' : ''}" href="#/account/${cid}/${a.id}">
-        <div><b>${esc(a.name)}</b><small>${freqLabel(a.frequency)}${a.status === 'closed' ? ' · ' + t('Closed') : ''}</small></div>
+        <div><b>${esc(a.name)}</b><small>${freqLabel(a.frequency)}${a.status === 'closed' ? ' · ' + t('Closed') : a.inactive ? ' · ⏸ ' + t('Inactive') : ''}</small></div>
         <div class="amt">${money(a.balance)}</div></a></li>`).join('')}</ul>
       <details class="card"><summary>+ ${t('Add account')}</summary>
         <form id="af">${accountRowHtml(1)}<button class="btn primary" type="submit">${t('Add account')}</button></form></details>
@@ -1123,6 +1167,56 @@ ${t('Type the customer name to confirm')}`);
   location.hash = '#/customers';
 }
 
+/** Patch that makes an account active or inactive; pauses are kept as date ranges for the score. */
+function setActive(a, active) {
+  const pauses = (a.pauses || []).map((p) => ({ ...p }));
+  if (!active) { pauses.push({ from: today(), to: null }); return { inactive: true, inactiveSince: today(), pauses }; }
+  const last = pauses.find((p) => !p.to); if (last) last.to = today();
+  return { inactive: false, inactiveSince: null, pauses };
+}
+
+/**
+ * Add or correct an account's opening balance (old-book balance) at any time.
+ * Every entry of the account is replayed in order with the new opening, so the open items, each collection's
+ * allocations and realised profit stay right. Only the balance moves, by the difference.
+ */
+async function editOpening(sid, cid, aid) {
+  const a = S.accounts[aid]; if (!a) return false;
+  if (!navigator.onLine) { toast(t('Needs internet, so that every entry of this account is loaded.'), true); return false; }
+  const old = L.round2(Number(a.openingBalance) || 0);
+  const v = prompt(`${t('Opening balance (old book)')}
+${t('Now')}: ${money(old)}`, old ? String(old) : '');
+  if (v == null) return false;
+  const raw = String(v).trim().replace(/,/g, '');
+  const amt = raw === '' ? 0 : L.round2(Number(raw));
+  if (!Number.isFinite(amt) || amt < 0) { toast(t('Enter a valid amount'), true); return false; }
+  if (amt === old) return false;
+  const data = await loadAccountData(sid, aid);
+  const op = (a.queue || []).find((q) => q.ref === 'opening');
+  const ratio = op?.ratio ?? L.legacyRatio(S.settings.legacyMarginPct);
+  const rp = L.replayAccount({ opening: amt > 0 ? { amount: amt, ratio } : null, sales: data.sales, collections: data.collections, returns: data.returns });
+  const expect = L.round2((Number(a.balance) || 0) + amt - old);
+  if (L.round2(rp.balance) !== expect) { toast(t('Some entries are still syncing. Try again in a minute.'), true); return false; }
+  if (!confirm(`${t('Opening balance')}: ${money(old)} → ${money(amt)}
+${t('Balance')}: ${money(a.balance)} → ${money(expect)}\n${t('Past collections of this account are re-counted, so its realised profit in earlier reports may change.')}`)) return false;
+  const b = F.writeBatch(F.db);
+  const patch = { openingBalance: amt, balance: expect, queue: rp.queue };
+  if (a.status === 'closed' && expect > 0) patch.status = 'open';
+  b.update(F.sellerDoc(sid, 'accounts', aid), { ...patch, balance: F.increment(L.round2(amt - old)) });
+  let changed = 0;
+  for (const nc of rp.collections) {
+    const oc = data.collections.find((x) => x.id === nc.id);
+    if (oc && (JSON.stringify(oc.allocations || []) !== JSON.stringify(nc.allocations) || L.round2(oc.profit || 0) !== L.round2(nc.profit))) {
+      b.update(F.sellerDoc(sid, 'collections', nc.id), { allocations: nc.allocations, profit: nc.profit }); changed++;
+    }
+  }
+  F.audit(b, S.user.uid, 'opening-balance', `sellers/${sid}/accounts/${aid}`, { openingBalance: old, balance: a.balance }, { openingBalance: amt, balance: expect, collectionsUpdated: changed });
+  F.commit(b, onWriteError);
+  Object.assign(a, patch);
+  toast(t('Opening balance saved')); rescoreSoon(cid);
+  return true;
+}
+
 async function loadAccountData(sid, aid) {
   const w = F.where('accountId', '==', aid);
   const [sales, collections, returns] = await Promise.all([
@@ -1169,7 +1263,8 @@ async function renderAccount(cid, aid) {
         <div class="contact">${rc.phone ? `<a class="btn wa" id="rcSend" href="https://wa.me/${L.waNumber(rc.phone)}?text=${encodeURIComponent(rc.text)}" target="_blank" rel="noopener">📩 ${t('Send receipt')}</a>` : `<span class="small muted">${t('No phone number saved')}</span>`}
         <button class="btn small" id="rcX">${t('Close')}</button></div></div>` : ''}
       <div class="card balance"><span>${t('Balance due')}</span><b>${money(a.balance)}</b>
-        <small>${freqLabel(a.frequency)}${a.status === 'closed' ? ' · ' + t('Closed') : ''}</small></div>
+        <small>${freqLabel(a.frequency)}${a.status === 'closed' ? ' · ' + t('Closed') : a.inactive ? ' · ⏸ ' + t('Inactive') + (a.inactiveSince ? ' ' + t('since') + ' ' + fmtDate(a.inactiveSince) : '') : ''}</small>
+        <button class="linkbtn obal" id="obal">${Number(a.openingBalance) > 0 ? `${t('Opening balance')}: ${money(a.openingBalance)} ✏️` : `+ ${t('Opening balance')}`}</button></div>
       <div class="grid3">
         <a class="tile primary" href="#/collect/${cid}/${aid}">${t('Collection')}</a>
         <a class="tile" href="#/sale/${cid}/${aid}">${t('New sale')}</a>
@@ -1187,7 +1282,9 @@ async function renderAccount(cid, aid) {
         ${r.type === 'sale' && isAdmin() ? `<button class="void" data-void="${r.ref.id}">${t('Void')}</button>` : ''}</td>
         <td>${r.sign > 0 ? money(r.amount) : ''}</td><td>${r.sign < 0 ? money(r.amount) : ''}</td><td>${money(r.balance)}</td></tr>`).join('')}
       </tbody></table>
-      <div class="actions">${a.status === 'closed'
+      <div class="actions">${a.status !== 'closed' ? (a.inactive
+        ? `<button class="btn" id="actTgl">▶ ${t('Make active')}</button>`
+        : `<button class="btn" id="actTgl">⏸ ${t('Make inactive')}</button>`) : ''}${a.status === 'closed'
         ? `<button class="btn" id="reopen">${t('Reopen account')}</button>`
         : `<button class="btn" id="close" ${a.balance > 0 ? 'disabled' : ''}>${t('Close account')}</button>`}</div>
       ${a.balance > 0 && a.status !== 'closed' ? `<p class="muted small">${t('An account can be closed when the balance is zero.')}</p>` : ''}`;
@@ -1196,6 +1293,16 @@ async function renderAccount(cid, aid) {
       const lines = ledger.slice(-25).map((r) => `${fmtDate(r.date) || '-'}  ${typeLabel(r)}${r.type === 'collection' || r.type === 'advance' ? ' (' + modeLabel(r.ref.mode) + ')' : ''}  ${r.sign > 0 ? '+' : '-'}${money(r.amount)}`);
       return `*${APP_NAME}*\n${c.name} — ${a.name}\n${t('Date')}: ${fmtDate(today())}\n\n${lines.join('\n')}\n\n*${t('Balance due')}: ${money(a.balance)}*`;
     };
+    const tg = $('#actTgl');
+    if (tg) tg.onclick = () => {
+      const on = !a.inactive;
+      if (on && !confirm(t('Make this account inactive? It stays in the route list marked ⏸ but is not counted, and the customer score does not count the paused time. A new sale makes it active again.'))) return;
+      const patch = setActive(a, !on);
+      const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), patch);
+      F.audit(b, S.user.uid, on ? 'account-inactive' : 'account-active', `sellers/${sid}/accounts/${aid}`, null, patch);
+      F.commit(b, onWriteError); Object.assign(a, patch); rescoreSoon(cid); draw();
+    };
+    $('#obal').onclick = () => editOpening(sid, cid, aid).then((ok) => ok && setTimeout(draw, 300));
     $('#waStmt').onclick = () => window.open(`https://wa.me/${L.waNumber(c.phone)}?text=${encodeURIComponent(stmtText())}`, '_blank');
     $('#pdfStmt').onclick = () => makePdf({
       title: `Statement - ${c.name} (${a.name})`, subtitle: `${c.phone || ''}  |  ${fmtDate(today())}`,
@@ -1221,7 +1328,7 @@ async function renderAccount(cid, aid) {
     if (rs) rs.addEventListener('click', () => sessionStorage.removeItem('receipt'));
     $$('[data-void]').forEach((btn) => (btn.onclick = () => voidSale(sid, cid, aid, a, data, btn.dataset.void).then((ok) => ok && setTimeout(draw, 300))));
     const cl = $('#close'), ro = $('#reopen');
-    if (cl) cl.onclick = () => { const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), { status: 'closed', closedOn: today() }); F.commit(b, onWriteError); toast(t('Account closed')); };
+    if (cl) cl.onclick = () => { const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), { status: 'closed', closedOn: today(), ...(a.inactive ? setActive(a, true) : {}) }); F.commit(b, onWriteError); toast(t('Account closed')); };
     if (ro) ro.onclick = () => { const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), { status: 'open' }); F.commit(b, onWriteError); };
   };
   await draw();
@@ -1249,6 +1356,7 @@ async function voidSale(sid, cid, aid, a0, data0, saleId) {
   sale.items.forEach((_, i) => b.delete(F.doc(F.db, 'stockMoves', `sale_${saleId}_${i}`)));
   adv.forEach((c) => {
     b.delete(F.sellerDoc(sid, 'collections', c.id));
+    if (c.mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', c.id));
     if (c.mode !== 'scrap') b.update(F.sellerDoc(sid, 'customers', cid), { [`modeCounts.${c.mode === 'upi' ? 'upi' : 'cash'}`]: F.increment(-1) });
   });
   v.collections.forEach((nc) => b.update(F.sellerDoc(sid, 'collections', nc.id), { allocations: nc.allocations, profit: nc.profit }));
@@ -1348,7 +1456,7 @@ function renderSale(cid, aid) {
       const ccol = F.sellerCol(sid, 'collections');
       b.set(F.doc(ccol, F.newId(ccol)), { accountId: aid, customerId: cid, date, amount: adv, kind: 'advance', mode: advMode, saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid });
     }
-    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(L.round2(value - adv)), status: 'open' });
+    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(L.round2(value - adv)), status: 'open', ...(a.inactive ? setActive(a, true) : {}) });
     if (order) {
       b.update(F.sellerDoc(sid, 'orders', order.id), { status: 'delivered', deliveredOn: date, saleId, accountId: aid });
       b.delete(F.doc(F.db, 'demand', order.id));
@@ -1431,15 +1539,265 @@ function renderCollect(cid, aid) {
     }
     if (amt > 0) b.set(F.doc(ccol, id), doc);
     else if (mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', id));
-    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-L.round2(amt + disc)) });
+    const bal = L.round2(a.balance - amt - disc);
+    const closeIt = a.inactive && bal === 0 && confirm(t('This inactive account is now fully paid. Close the account?'));
+    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-L.round2(amt + disc)), ...(closeIt ? { status: 'closed', ...setActive(a, true) } : {}) });
     F.commit(b, onWriteError);
     rescoreSoon(cid);
-    const bal = L.round2(a.balance - amt - disc);
     const text = [`*${APP_NAME}*`, `${c.name} — ${a.name}`,
       amt > 0 ? `${money(amt)} ${t('received')} (${fmtDate(date)}, ${modeLabel(mode)}${mode === 'scrap' ? ': ' + scrapDetail(doc) : ''}).` : '',
       disc > 0 ? `${t('Discount')}: ${money(disc)}` : '', `${t('Balance')}: *${money(bal)}*`, t('Thank you')].filter(Boolean).join('\n');
     try { sessionStorage.setItem('receipt', JSON.stringify({ aid, customer: c.name, amount: amt, discount: disc, balance: bal, phone: c.phone || '', text, at: Date.now() })); } catch {}
     go(takeCollectBack(aid) || `#/account/${cid}/${aid}`);
+  };
+}
+
+// ---------- cash sale (walk-in buyer on the route, no account) ----------
+// Stored as a normal sale + payment entries with cash: true and no customer, so reports, day closing,
+// stock history and categories count it like any other sale. Paid in full at once; a part payment
+// needs a customer account, so the buyer is added as a customer and the sale goes to their first account.
+const cashItems = (s) => s.items.map((i) => `${i.name} × ${i.qty}${i.returned ? ` (↩ ${i.returned})` : ''}`).join(', ');
+const payTotals = (pays) => pays.filter((p) => p.amount > 0).map((p) => `${modeLabel(p.mode)} ${money(p.amount)}`).join(' · ');
+const last10 = (p) => String(p || '').replace(/\D/g, '').slice(-10);
+function cashReceiptText(sale, pays) {
+  return [`*${APP_NAME}*`, `🛒 ${t('Cash sale')} · ${fmtDate(sale.date)}`, sale.buyerName || '', '',
+    ...sale.items.map((i) => `${i.name} × ${i.qty} — ${money(i.price * i.qty)}`), '',
+    `*${t('Total')}: ${money(sale.saleValue)}*`, `${t('Paid')}: ${payTotals(pays)}`, t('Thank you')].filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n');
+}
+
+/** Write a cash sale (paid in full) into the batch. Returns the sale id. */
+function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone }) {
+  const scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now();
+  b.set(F.doc(scol, saleId), { accountId: null, customerId: null, cash: true, buyerName: name || '', buyerPhone: phone || '', date, items: lines, saleValue: value, cost, advance: value, creditedValue: 0, creditedCost: 0, createdAt: now, by: S.user.uid });
+  lines.forEach((l, i) => { b.update(F.doc(F.db, 'stock', l.stockId), { qty: F.increment(-l.qty) }); logMove(b, `sale_${saleId}_${i}`, { name: l.name, type: 'sale', qty: l.qty, date, refId: saleId, sellerKey: sid }); });
+  const ccol = F.sellerCol(sid, 'collections');
+  L.cashPayments(value, cost, pays).forEach((p, k) => {
+    const id = F.newId(ccol);
+    const doc = { accountId: null, customerId: null, cash: true, buyerName: name || '', date, amount: p.amount, kind: 'cash', mode: p.mode, saleId, note: '', allocations: [{ ref: saleId, amount: p.amount, profit: p.profit }], profit: p.profit, createdAt: now + k, by: S.user.uid };
+    if (p.mode === 'scrap') {
+      doc.scrapItems = p.scrapItems || [];
+      b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, collectionId: id, date, items: doc.scrapItems, total: p.amount, customerName: name || t('Cash sale'), createdAt: now, by: S.user.uid });
+    }
+    b.set(F.doc(ccol, id), doc);
+  });
+  return saleId;
+}
+
+/**
+ * Part-paid cash sale turned into a customer: put the sale and what was paid (as advances) into the new
+ * customer's first account. Writes into the batch and returns the account doc with its queue and balance.
+ */
+function applyPendingSale(b, sid, cid, aid, acc, pend, custName) {
+  const scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now(), date = pend.date || today();
+  const pays = pend.pays.filter((p) => p.amount > 0), paid = L.round2(pays.reduce((s, p) => s + p.amount, 0));
+  b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: pend.lines, saleValue: pend.value, cost: pend.cost, advance: paid, creditedValue: 0, creditedCost: 0, fromCashSale: true, createdAt: now, by: S.user.uid });
+  pend.lines.forEach((l, i) => { b.update(F.doc(F.db, 'stock', l.stockId), { qty: F.increment(-l.qty) }); logMove(b, `sale_${saleId}_${i}`, { name: l.name, type: 'sale', qty: l.qty, date, refId: saleId, sellerKey: sid }); });
+  let queue = L.addSaleToQueue(acc.queue || [], saleId, date, pend.value, pend.cost);
+  const ccol = F.sellerCol(sid, 'collections');
+  pays.forEach((p, k) => {
+    const r = L.allocate(queue, p.amount, saleId); queue = r.queue;
+    const id = F.newId(ccol);
+    const doc = { accountId: aid, customerId: cid, date, amount: p.amount, kind: 'advance', mode: p.mode, saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now + k, by: S.user.uid };
+    if (p.mode === 'scrap') {
+      doc.scrapItems = p.scrapItems || [];
+      b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, collectionId: id, date, items: doc.scrapItems, total: p.amount, customerName: custName, createdAt: now, by: S.user.uid });
+    }
+    b.set(F.doc(ccol, id), doc);
+  });
+  return { ...acc, queue, balance: L.round2((acc.balance || 0) + pend.value - paid) };
+}
+const readPending = () => { try { const p = JSON.parse(sessionStorage.getItem('pendingCash') || 'null'); return p && Date.now() - p.at < 6 * 3600e3 ? p : null; } catch { return null; } };
+
+function renderCashSale() {
+  if (needSeller()) return;
+  const sid = S.sid;
+  setTitle(t('Cash sale'), true);
+  try { sessionStorage.removeItem('pendingCash'); } catch {} // a part-paid cart left behind is dropped
+  const cart = [];
+  let cat = 'all', cashTouched = false;
+  view.innerHTML = `
+    <div class="card form" id="csf">
+      <div id="cart"></div>
+      <div class="row total"><span>${t('Total')}</span><b id="total">₹0</b></div>
+      <div class="two"><label>${t('Name (optional)')}<input id="bname" autocomplete="off"></label>
+        <label>${t('Phone (optional)')}<input id="bphone" type="tel" inputmode="tel" autocomplete="off"></label></div>
+      <label>${t('Paid')}</label>
+      <div class="two"><label>${t('Cash')}<input id="pcash" type="number" step="any" min="0" inputmode="decimal"></label>
+        <label>UPI<input id="pupi" type="number" step="any" min="0" inputmode="decimal"></label></div>
+      <details id="scrapPay" class="discbox"><summary>♻️ ${t('Scrap')}</summary>
+        <div class="muted small">${t('Material taken instead of money. Enter the value given for each type.')}</div>
+        <div id="slines">${scrapLineHtml()}</div><button type="button" class="btn ghost small" id="addS">+ ${t('Another type')}</button></details>
+      <div id="payInfo" class="small"></div>
+      <label>${t('Date')}<input id="sdate" type="date" value="${today()}" max="${today()}"></label>
+      <button class="btn primary" id="saveCash">${t('Save cash sale')}</button></div>
+    <h3>${t('Add items from stock')}</h3>
+    <div class="fchips" id="scat"></div>
+    <input id="sq" type="search" placeholder="${t('Search stock')}">
+    <ul class="list" id="slist"></ul>`;
+  const value = () => L.saleTotals(cart).value;
+  const scrapItems = () => $$('#slines .scrapline').map((r) => ({ type: $('[name=st]', r).value, value: L.round2(num($('[name=sv]', r).value)) })).filter((x) => x.value > 0);
+  const scrapTotal = () => L.round2(scrapItems().reduce((s, x) => s + x.value, 0));
+  const pays = () => [{ mode: 'cash', amount: L.round2(num($('#pcash').value)) }, { mode: 'upi', amount: L.round2(num($('#pupi').value)) }, { mode: 'scrap', amount: scrapTotal(), scrapItems: scrapItems() }];
+  const paidNow = () => L.round2(pays().reduce((s, p) => s + p.amount, 0));
+  const info = () => {
+    const v = value(), p = paidNow(), bal = L.round2(v - p);
+    $('#payInfo').innerHTML = !v ? '' : bal < 0 ? `<span class="bad">${t('Paid is more than the total')} (${money(-bal)})</span>`
+      : bal > 0 ? `<span class="warnline">${t('Paid')} ${money(p)} · ${t('Balance')} ${money(bal)} — ${t('a balance needs a customer account')}</span>` : `✓ ${t('Paid in full')}`;
+  };
+  const refill = () => { if (!cashTouched) $('#pcash').value = Math.max(0, L.round2(value() - num($('#pupi').value) - scrapTotal())) || ''; info(); };
+  const drawStock = () => {
+    const qv = ($('#sq').value || '').toLowerCase();
+    $('#scat').innerHTML = catChips(Object.values(S.stock).filter((x) => x.qty > 0), cat);
+    $$('#scat [data-cat]').forEach((b) => (b.onclick = () => { cat = b.dataset.cat; drawStock(); }));
+    const items = Object.values(S.stock).filter((s) => s.qty > 0 && (cat === 'all' || catOf(s) === cat) && (!qv || s.name.toLowerCase().includes(qv))).sort((x, y) => x.name.localeCompare(y.name)).slice(0, 60);
+    $('#slist').innerHTML = items.map((s) => `<li><button type="button" class="row pick" data-add="${s.id}"><div><b>${esc(s.name)}</b><small>${t('In stock')}: ${s.qty}</small></div><div class="amt">${money(s.maxPrice)}</div></button></li>`).join('') || `<li class="muted">${t('No stock found')}</li>`;
+    $$('[data-add]').forEach((b) => (b.onclick = () => {
+      const s = S.stock[b.dataset.add], ex = cart.find((x) => x.stockId === s.id);
+      if (ex) { if (ex.qty < s.qty) ex.qty++; } else cart.push({ stockId: s.id, name: s.name, qty: 1, unitCost: s.unitCost, price: s.maxPrice, max: s.qty, category: catOf(s) });
+      drawCart();
+    }));
+  };
+  const drawCart = () => {
+    $('#cart').innerHTML = cart.map((l, i) => `<div class="cartline">
+      <div class="nm"><b>${esc(l.name)}</b><button type="button" class="x" data-rm="${i}">×</button></div>
+      <div class="two"><label>${t('Qty')}<input type="number" min="1" max="${l.max}" value="${l.qty}" data-q="${i}" inputmode="numeric"></label>
+      <label>${t('Price each')}<input type="number" step="any" value="${l.price}" data-p="${i}" inputmode="decimal"></label></div></div>`).join('') || `<p class="muted">${t('Tap items below to add them.')}</p>`;
+    $$('[data-rm]').forEach((b) => (b.onclick = () => { cart.splice(+b.dataset.rm, 1); drawCart(); }));
+    $$('[data-q]').forEach((inp) => (inp.oninput = () => { cart[+inp.dataset.q].qty = Math.max(1, Math.min(cart[+inp.dataset.q].max, Math.round(num(inp.value)))); total(); }));
+    $$('[data-p]').forEach((inp) => (inp.oninput = () => { cart[+inp.dataset.p].price = num(inp.value); total(); }));
+    total();
+  };
+  const total = () => { $('#total').textContent = money(value()); refill(); };
+  const bindS = () => { $$('#slines [name=sv]').forEach((i) => (i.oninput = refill)); $$('#slines [data-srm]').forEach((b) => (b.onclick = () => { if ($$('#slines .scrapline').length > 1) b.parentElement.remove(); refill(); })); };
+  $('#addS').onclick = () => { $('#slines').insertAdjacentHTML('beforeend', scrapLineHtml()); bindS(); };
+  $('#pcash').oninput = () => { cashTouched = true; info(); };
+  $('#pupi').oninput = refill;
+  $('#sq').oninput = drawStock;
+  bindS(); drawStock(); drawCart();
+  $('#saveCash').onclick = () => {
+    if (!cart.length) return toast(t('Add at least one item'), true);
+    const lines = cart.map((l) => ({ stockId: l.stockId, name: l.name, qty: l.qty, unitCost: l.unitCost, price: l.price, returned: 0, category: l.category || 'Others' }));
+    const { value: v, cost } = L.saleTotals(lines), p = pays(), paid = paidNow(), date = $('#sdate').value || today();
+    const name = $('#bname').value.trim(), phone = $('#bphone').value.trim();
+    if (paid > v + 0.005) return toast(t('Paid is more than the total'), true);
+    if (paid < v - 0.005) {
+      if (!confirm(`${t('Balance')} ${money(L.round2(v - paid))}.\n${t('A balance needs a customer account. Add this buyer as a customer now? The sale and what was paid go into their account.')}`)) return;
+      try { sessionStorage.setItem('pendingCash', JSON.stringify({ lines, value: v, cost, pays: p.filter((x) => x.amount > 0), date, name, phone, at: Date.now() })); } catch {}
+      return go('#/customer-new');
+    }
+    if ($('#saveCash').disabled) return; $('#saveCash').disabled = true;
+    const b = F.writeBatch(F.db);
+    const saleId = writeCashSale(b, sid, { lines, value: v, cost, pays: p, date, name, phone });
+    F.audit(b, S.user.uid, 'cash-sale', `sellers/${sid}/sales/${saleId}`, null, { value: v, paid, buyer: name });
+    F.commit(b, onWriteError);
+    try { sessionStorage.setItem('cashRcpt', JSON.stringify({ saleId, phone, text: cashReceiptText({ date, items: lines, saleValue: v, buyerName: name }, p), at: Date.now() })); } catch {}
+    toast(t('Cash sale saved'));
+    go('#/cash-sales');
+  };
+}
+
+async function renderCashSales() {
+  setTitle(t('Cash sales'), '#/menu');
+  if (needSeller()) return;
+  const sid = S.sid;
+  let month = today().slice(0, 7);
+  const draw = async () => {
+    view.innerHTML = sellerBar() + '<div class="loading">…</div>';
+    const [sales, cols] = await Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'sales'), F.where('cash', '==', true))), F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('cash', '==', true)))]);
+    const list = sales.filter((s) => (s.date || '').startsWith(month)).sort((a, b) => (a.date === b.date ? (b.createdAt || 0) - (a.createdAt || 0) : a.date < b.date ? 1 : -1));
+    const paysOf = (id) => cols.filter((c) => c.saleId === id && c.kind === 'cash');
+    let rc = null; try { rc = JSON.parse(sessionStorage.getItem('cashRcpt') || 'null'); if (rc && Date.now() - rc.at > 3600e3) rc = null; } catch {}
+    const tot = L.round2(list.reduce((s, x) => s + x.saleValue - (x.creditedValue || 0), 0));
+    view.innerHTML = sellerBar() + `
+      ${rc ? `<div class="banner" id="rcpt"><b>✓ ${t('Cash sale saved')}</b>
+        <div class="contact">${rc.phone ? `<a class="btn wa" href="https://wa.me/${L.waNumber(rc.phone)}?text=${encodeURIComponent(rc.text)}" target="_blank" rel="noopener">📩 ${t('Send receipt')}</a>` : `<a class="btn wa" href="https://wa.me/?text=${encodeURIComponent(rc.text)}" target="_blank" rel="noopener">📩 ${t('Send receipt')}</a>`}
+        <button class="btn small" id="rcX">${t('Close')}</button></div></div>` : ''}
+      <div class="toolbar"><input type="month" id="cm" value="${month}"><a class="btn primary" href="#/cash-sale">+ ${t('Cash sale')}</a></div>
+      <div class="muted small">${list.length} ${t('cash sales')} · ${money(tot)}</div>
+      <ul class="list">${list.map((s) => {
+        const left = s.items.some((i) => i.qty - (i.returned || 0) > 0), hasRet = s.items.some((i) => i.returned);
+        return `<li class="card"><div class="row" style="padding:0"><div><b>${fmtDate(s.date)} · ${esc(s.buyerName || t('Walk-in buyer'))}</b>${s.buyerPhone ? `<small>${esc(s.buyerPhone)}</small>` : ''}<small>${esc(cashItems(s))}</small><small>${payTotals(paysOf(s.id))}</small></div>
+          <div class="amt">${money(s.saleValue - (s.creditedValue || 0))}${s.creditedValue ? `<small>↩ ${money(s.creditedValue)}</small>` : ''}</div></div>
+          <div class="contact">${s.buyerPhone ? `<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/${L.waNumber(s.buyerPhone)}?text=${encodeURIComponent(cashReceiptText(s, paysOf(s.id)))}">📩</a>` : ''}
+          ${left ? `<a class="btn small" href="#/cash-return/${s.id}">↩ ${t('Return')}</a>` : ''}
+          ${isAdmin() && !hasRet ? `<button class="btn small danger" style="width:auto" data-cvoid="${s.id}">${t('Void')}</button>` : ''}</div></li>`;
+      }).join('') || `<li class="muted">${t('No cash sales this month')}</li>`}</ul>`;
+    bindSellerBar();
+    $('#cm').onchange = (e) => { month = e.target.value || today().slice(0, 7); draw(); };
+    const x = $('#rcX'); if (x) x.onclick = () => { try { sessionStorage.removeItem('cashRcpt'); } catch {} $('#rcpt').remove(); };
+    $$('[data-cvoid]').forEach((b) => (b.onclick = () => voidCashSale(sid, list.find((s) => s.id === b.dataset.cvoid), paysOf(b.dataset.cvoid)).then((ok) => ok && setTimeout(draw, 300))));
+  };
+  await draw();
+}
+
+/** Admin: cancel a cash sale entered by mistake (no returns). Items go back to stock, payments are removed. */
+async function voidCashSale(sid, s, pays) {
+  if (!isAdmin() || !s) return false;
+  if (s.items.some((i) => i.returned)) { toast(t('This sale has a return. It cannot be voided — use Return instead.'), true); return false; }
+  if (!confirm(`${t('Void this cash sale?')}\n${fmtDate(s.date)} · ${cashItems(s)} · ${money(s.saleValue)}\n${t('Items go back to stock.')}`)) return false;
+  const all = await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('saleId', '==', s.id)));
+  const b = F.writeBatch(F.db);
+  b.delete(F.sellerDoc(sid, 'sales', s.id));
+  [...new Map([...pays, ...all].map((c) => [c.id, c])).values()].forEach((c) => { b.delete(F.sellerDoc(sid, 'collections', c.id)); if (c.mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', c.id)); });
+  s.items.forEach((i, k) => {
+    b.delete(F.doc(F.db, 'stockMoves', `sale_${s.id}_${k}`));
+    const left = i.qty - (i.returned || 0); if (left <= 0) return;
+    if (S.stock[i.stockId]) b.update(F.doc(F.db, 'stock', i.stockId), { qty: F.increment(left) });
+    else { const sc = F.collection(F.db, 'stock'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: left, unitCost: i.unitCost, maxPrice: L.maxPrice(i.unitCost, S.settings.defaultMarginPct), category: i.category || 'Others', addedBy: S.user.uid, createdAt: Date.now() }); }
+  });
+  F.audit(b, S.user.uid, 'cash-sale-void', `sellers/${sid}/sales/${s.id}`, s, null);
+  F.commit(b, onWriteError); toast(t('Voided'));
+  return true;
+}
+
+async function renderCashReturn(saleId) {
+  if (needSeller()) return;
+  const sid = S.sid;
+  setTitle(`${t('Return')} · ${t('Cash sale')}`, '#/cash-sales');
+  const d = await F.getDoc(F.sellerDoc(sid, 'sales', saleId));
+  if (!d.exists()) return go('#/cash-sales');
+  const s = { id: saleId, ...d.data() };
+  if (!s.cash) return go('#/cash-sales');
+  view.innerHTML = `<form id="rf" class="card form">
+    <div class="small muted">${fmtDate(s.date)} · ${esc(s.buyerName || t('Walk-in buyer'))}</div>
+    <div id="ritems">${s.items.map((i, k) => { const left = i.qty - (i.returned || 0); return left > 0 ? `<label>${esc(i.name)} <small class="muted">(${t('max')} ${left} · ${money(i.price)})</small><input type="number" min="0" max="${left}" value="0" data-ri="${k}" inputmode="numeric"></label>` : ''; }).join('')}</div>
+    <fieldset><legend>${t('Condition')}</legend>
+      <label class="opt"><input type="radio" name="cond" value="stock" checked><span>${t('Good')}<small>${t('Goes back to stock')}</small></span></label>
+      <label class="opt"><input type="radio" name="cond" value="complaint"><span>${t('Complaint')}<small>${t('Repair it or send it back to the supplier')}</small></span></label>
+      <label class="opt"><input type="radio" name="cond" value="scrap"><span>${t('Damage')}<small>${t('Cannot be repaired; written off as a loss')}</small></span></label></fieldset>
+    <label>${t('Money given back by')}</label>${payPicker('rmode', 'cash')}
+    <div class="row total"><span>${t('Refund')}</span><b id="ramt">₹0</b></div>
+    <label>${t('Date')}<input name="date" type="date" value="${today()}" max="${today()}"></label>
+    <button class="btn primary" type="submit">${t('Save return')}</button></form>`;
+  const f = $('#rf');
+  const picked = () => $$('[data-ri]').map((inp) => { const k = +inp.dataset.ri, it = s.items[k]; return { k, qty: Math.max(0, Math.min(Math.round(num(inp.value)), it.qty - (it.returned || 0))) }; }).filter((x) => x.qty > 0);
+  const calc = () => { $('#ramt').textContent = money(picked().reduce((t2, p) => t2 + s.items[p.k].price * p.qty, 0)); };
+  $$('[data-ri]').forEach((inp) => (inp.oninput = calc));
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    const p = picked(); if (!p.length) return toast(t('Enter quantity to return'), true);
+    const sb = $('button[type=submit]', f); if (sb.disabled) return; sb.disabled = true;
+    const cond = f.cond.value, date = f.date.value || today(), mode = pickedMode('rmode', f), now = Date.now();
+    const items = p.map((x) => ({ stockId: s.items[x.k].stockId, name: s.items[x.k].name, qty: x.qty, price: s.items[x.k].price, unitCost: s.items[x.k].unitCost, category: lineCat(s.items[x.k]) }));
+    const amount = L.round2(items.reduce((t2, i) => t2 + i.price * i.qty, 0)), cost = L.round2(items.reduce((t2, i) => t2 + i.unitCost * i.qty, 0));
+    const b = F.writeBatch(F.db), rcol = F.sellerCol(sid, 'returns'), rid = F.newId(rcol);
+    b.set(F.doc(rcol, rid), { saleId: s.id, accountId: null, customerId: null, cash: true, date, items, condition: cond, credited: true, amount, cost, refundMode: mode, createdAt: now, by: S.user.uid });
+    b.update(F.sellerDoc(sid, 'sales', s.id), { items: s.items.map((it, k) => { const x = p.find((q) => q.k === k); return x ? { ...it, returned: (it.returned || 0) + x.qty } : it; }),
+      creditedValue: L.round2((s.creditedValue || 0) + amount), creditedCost: L.round2((s.creditedCost || 0) + cost) });
+    const rf = L.cashRefund(amount, cost, mode), ccol = F.sellerCol(sid, 'collections');
+    b.set(F.doc(ccol, F.newId(ccol)), { accountId: null, customerId: null, cash: true, buyerName: s.buyerName || '', date, kind: 'refund', saleId: s.id, returnId: rid, mode, amount: rf.amount, profit: rf.profit, allocations: [], note: t('Refund'), createdAt: now, by: S.user.uid });
+    items.forEach((i, k) => {
+      logMove(b, `ret_${rid}_${k}`, { name: i.name, type: cond === 'stock' ? 'return' : cond === 'complaint' ? 'complaint' : 'damage', qty: i.qty, date, refId: s.id, sellerKey: sid });
+      if (cond === 'stock') {
+        if (S.stock[i.stockId]) b.update(F.doc(F.db, 'stock', i.stockId), { qty: F.increment(i.qty) });
+        else { const sc = F.collection(F.db, 'stock'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: i.qty, unitCost: i.unitCost, maxPrice: L.maxPrice(i.unitCost, S.settings.defaultMarginPct), category: i.category || 'Others', addedBy: S.user.uid, createdAt: now }); }
+      }
+      if (cond === 'complaint') { const cc = F.collection(F.db, 'complaints'); b.set(F.doc(cc, F.newId(cc)), { ...i, sellerId: sid, returnId: rid, customerName: s.buyerName || t('Cash sale'), credited: true, status: 'open', date, createdAt: now }); }
+      if (cond === 'scrap') { const sc = F.collection(F.db, 'scrapLosses'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: i.qty, amount: L.round2(i.unitCost * i.qty), sellerId: sid, returnId: rid, date, createdAt: now }); }
+    });
+    F.commit(b, onWriteError);
+    toast(t('Return saved'));
+    go('#/cash-sales');
   };
 }
 
@@ -1752,9 +2110,9 @@ async function renderItem(key) {
     try {
       const sd = await F.getDoc(F.sellerDoc(m.sellerKey, 'sales', m.refId)); if (!sd.exists()) return;
       const sale = sd.data(), line = (sale.items || []).find((i) => L.nameKey(i.name) === key);
-      let cust = m.sellerKey === S.sid ? S.customers[sale.customerId] : null;
+      let cust = sale.cash ? { name: '🛒 ' + (sale.buyerName || t('Cash sale')) } : m.sellerKey === S.sid ? S.customers[sale.customerId] : null;
       if (!cust) { const ck = `${m.sellerKey}/${sale.customerId}`; custCache[ck] ||= F.getDoc(F.sellerDoc(m.sellerKey, 'customers', sale.customerId)).then((d) => (d.exists() ? d.data() : null)).catch(() => null); cust = await custCache[ck]; }
-      det[m.id] = { price: line?.price, customer: cust?.name || '', cid: sale.customerId, book: m.sellerKey };
+      det[m.id] = { price: line?.price, customer: cust?.name || '', cid: sale.cash ? null : sale.customerId, book: m.sellerKey };
     } catch {}
   }));
   const priced = Object.values(det).filter((d) => d.price != null);
@@ -1783,7 +2141,7 @@ async function renderItem(key) {
       <div class="amt">× ${m.qty}<small>${m.cost != null ? money(m.cost) : ''}</small></div></li>`).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>
     <h3>📤 ${t('Went out (sold)')}</h3>
     <ul class="list">${outs.map((m) => { const d = det[m.id];
-      return `<li class="row"><div><b>${fmtDate(m.date)}</b><small>${d && d.customer ? (d.book === S.sid ? `<a href="#/customer/${d.cid}">${esc(d.customer)}</a>` : esc(d.customer)) + (isAdmin() ? ' · ' + esc(m.sellerName) : '') : esc(m.sellerName)}</small></div>
+      return `<li class="row"><div><b>${fmtDate(m.date)}</b><small>${d && d.customer ? (d.book === S.sid && d.cid ? `<a href="#/customer/${d.cid}">${esc(d.customer)}</a>` : esc(d.customer)) + (isAdmin() ? ' · ' + esc(m.sellerName) : '') : esc(m.sellerName)}</small></div>
         <div class="amt">× ${m.qty}${d && d.price != null ? `<small>${money(d.price)}</small>` : ''}</div></li>`; }).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>
     ${backs.length ? `<h3>↩ ${t('Returns and corrections')}</h3><ul class="list">${backs.map((m) => `<li class="row"><div><b>${fmtDate(m.date)}</b><small>${typeL[m.type]} · ${esc(m.sellerName)}</small></div><div class="amt">${m.qty > 0 && m.type !== 'adjust' ? '' : ''}${m.type === 'adjust' && m.qty > 0 ? '+' : ''}${m.qty}</div></li>`).join('')}</ul>` : ''}
     ${isAdmin() && lots.length ? `<h3>${t('Stock lots')}</h3><ul class="list">${lots.map((x) => `<li><a class="row" href="#/stock-edit/${x.id}"><div><b>${t('Qty')} ${x.qty}</b><small>${t('Cost')} ${money(x.unitCost)} · ${t('Price')} ${money(x.maxPrice)} · ${fmtDate(new Date(x.createdAt || 0).toISOString().slice(0, 10))}</small></div><span class="btn small">${t('Edit')}</span></a></li>`).join('')}</ul>` : ''}`;
@@ -1965,11 +2323,11 @@ async function renderReport() {
     try { sessionStorage.setItem('rep', JSON.stringify({ ...st, from, to })); } catch {}
     $('#rrange').innerHTML = `<b>${fmtDate(from)}${from !== to ? ' – ' + fmtDate(to) : ''}</b>`;
     $('#out').innerHTML = '<div class="loading">…</div>';
-    const fields = [['salesValue', 'Sales'], ['collected', 'Collected'], ['collectedCash', '— Cash'], ['collectedUpi', '— UPI'], ['collectedScrap', '— Scrap'],
+    const fields = [['salesValue', 'Sales'], ['cashSales', '— Cash sales'], ['collected', 'Collected'], ['collectedCash', '— Cash'], ['collectedUpi', '— UPI'], ['collectedScrap', '— Scrap'],
       ['discount', 'Discounts given'], ['booked', 'Booked profit'], ['realised', 'Realised profit'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'],
       ['cashInHand', 'Cash in hand'], ['net', 'Net']];
-    const rowCls = (k) => (k === 'net' ? 'net' : k === 'cashInHand' ? 'cash' : /Cash$|Upi$|Scrap$/.test(k) ? 'sub' : '');
-    const lbl = (l) => (l === '— Cash' ? '— ' + t('Cash') : l === '— Scrap' ? '— ' + t('Scrap') : t(l));
+    const rowCls = (k) => (k === 'net' ? 'net' : k === 'cashInHand' ? 'cash' : /Cash$|Upi$|Scrap$|^cashSales$/.test(k) ? 'sub' : '');
+    const lbl = (l) => (l === '— Cash' ? '— ' + t('Cash') : l === '— Scrap' ? '— ' + t('Scrap') : l === '— Cash sales' ? '— ' + t('Cash sales') : t(l));
     if (!isAdmin()) {
       const [me] = L.holderPeriods([{ ...S.profile, uid: S.user.uid }], from, to);
       const r = me ? await sellerFigures(S.sid, me.from, me.to) : L.sellerReport({});
@@ -2168,7 +2526,7 @@ async function renderPrintList() {
       const trs = list.map((c) => {
         const accs = rowsOf(c); n++;
         return accs.map((a, i) => { gTotal += a.balance || 0; return `<tr>${i === 0 ? `<td rowspan="${accs.length}">${n}</td><td rowspan="${accs.length}" class="pl">${esc(placeOf(c))}</td><td rowspan="${accs.length}"><b>${esc(c.name)}</b></td><td rowspan="${accs.length}">${esc(c.phone || '')}</td>` : ''}
-          <td>${esc(a.name)}</td><td class="num">${money(a.balance)}</td><td>${fmtDate(lastPay[a.id] || '') || '—'}</td></tr>`; }).join('');
+          <td>${a.inactive ? '⏸ ' : ''}${esc(a.name)}</td><td class="num">${money(a.balance)}</td><td>${fmtDate(lastPay[a.id] || '') || '—'}</td></tr>`; }).join('');
       }).join('');
       bookTotal += gTotal;
       body += `<h4>${esc(label)} · ${list.length} ${t('customers')} · ${money(gTotal)}</h4>
@@ -2191,6 +2549,7 @@ function renderMenu() {
     ${isAdmin() ? '' : `<li><a href="#/expenses">💸 ${t('My expenses')}</a></li>`}
     ${isAdmin() ? `<li><a href="#/expenses">💸 ${t('Seller expenses')}</a></li>` : ''}
     <li><a href="#/orders">🚚 ${t('Orders')}</a></li>
+    ${S.sid ? `<li><a href="#/cash-sales">🛒 ${t('Cash sales')}</a></li>` : ''}
     ${S.sid ? `<li><a href="#/close-day">🌙 ${t('Close today')}</a></li>` : ''}
     <li><a href="#/complaints">🛠️ ${t('Complaint items')} (${Object.keys(S.complaints).length})</a></li>
     <li><a href="#/shop-link">🛍️ ${t('Shop link')}</a></li>
@@ -2340,9 +2699,10 @@ async function renderBackup() {
       const when = (ms) => (ms ? new Date(ms).toLocaleString('en-IN') : '');
       add('Customers', per.customers.map((c) => ({ seller: c.seller, id: c.id, name: c.name, houseNo: c.house || '', lane: c.lane || '', phone: c.phone, otherPhones: phonesOf(c).filter((p) => !p.primary).map((p) => `${p.label} ${p.number}`.trim()).join('; '), address: c.address, routeDays: daysOf(c).map((x) => DAY_KEYS[x]).join(' '), lat: c.geo?.lat ?? '', lng: c.geo?.lng ?? '', oldAddresses: (c.addressHistory || []).map((h) => `${h.address} (till ${h.until})`).join('; '), cashCount: c.modeCounts?.cash || 0, upiCount: c.modeCounts?.upi || 0 })));
       add('Accounts', per.accounts.map((a) => ({ seller: a.seller, id: a.id, customer: cname[a.customerId], customerId: a.customerId, account: a.name, frequency: a.frequency, openingBalance: a.openingBalance, balance: a.balance, status: a.status })));
-      add('Sales', per.sales.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], account: aname[x.accountId], items: items(x.items), saleValue: x.saleValue, cost: x.cost, advance: x.advance, returnedValue: x.creditedValue || 0, id: x.id })));
-      add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: MODE_EN[x.mode] || 'Cash', scrap: (x.scrapItems || []).map((i) => `${i.type} ${i.value}`).join('; '), amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
-      add('Returns', per.returns.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], account: aname[x.accountId], items: items(x.items), condition: x.condition, credited: x.credited ? 'yes' : 'no', amount: x.amount, cost: x.cost })));
+      const cashName = (x) => `Cash sale${x.buyerName ? ': ' + x.buyerName : ''}`;
+      add('Sales', per.sales.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : cname[x.customerId], account: aname[x.accountId], items: items(x.items), saleValue: x.saleValue, cost: x.cost, advance: x.advance, returnedValue: x.creditedValue || 0, id: x.id })));
+      add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: MODE_EN[x.mode] || 'Cash', scrap: (x.scrapItems || []).map((i) => `${i.type} ${i.value}`).join('; '), amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
+      add('Returns', per.returns.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? 'Cash sale' : cname[x.customerId], account: aname[x.accountId], items: items(x.items), condition: x.condition, credited: x.credited ? 'yes' : 'no', amount: x.amount, cost: x.cost })));
       add('Notes', per.notes.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId] || x.customerName, note: x.text, remindOn: x.dueDate, done: x.done ? 'yes' : 'no' })));
       add('Expenses', per.expenses.map((x) => ({ seller: x.seller, date: x.date, type: x.category, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, note: x.note })));
       add('Visits', per.visits.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], reason: x.reason, promisedDate: x.promiseDate || '', note: x.note })));
@@ -2654,6 +3014,7 @@ async function renderDeliver(oid) {
   };
 }
 
+const noteLine = (o) => (o.note ? `<div class="onote">📝 ${esc(o.note)}</div>` : '');
 async function renderOrders() {
   setTitle(t('Orders'));
   let tab = (() => { try { return sessionStorage.getItem('ordTab') || 'carry'; } catch { return 'carry'; } })();
@@ -2682,10 +3043,10 @@ async function renderOrders() {
         const agg = {}; list.forEach((o) => o.items.forEach((i) => { const k = i.name.trim(); agg[k] = (agg[k] || 0) + Number(i.qty || 0); }));
         body = `<div class="toolbar"><input type="date" id="od" value="${day}"></div>
           <div class="card"><b>📦 ${t('Load these items')}</b>${Object.entries(agg).map(([n, q]) => `<div class="kv"><span>${esc(n)}</span><span><b>× ${q}</b> <small class="muted">${t('in stock')} ${stockQtyByName(n)}</small></span></div>`).join('') || `<div class="muted small">${t('No deliveries for this day')}</div>`}</div>
-          <ul class="list">${list.map((o) => { const c = S.customers[o.customerId]; return `<li><a class="row" href="#/order-edit/${o.id}"><div>${placeBadge(c)}<b>${esc(o.customerName)}</b><small>${esc(orderText(o))}${o.note ? ' · ' + esc(o.note) : ''}</small></div>
+          <ul class="list">${list.map((o) => { const c = S.customers[o.customerId]; return `<li><a class="row" href="#/order-edit/${o.id}"><div>${placeBadge(c)}<b>${esc(o.customerName)}</b><small>${esc(orderText(o))}</small>${noteLine(o)}</div>
             <span class="pill ${o.deliveryDate < day ? 'bad' : 'ok'}">${o.deliveryDate < day ? t('Late') + ' ' + shortDate(o.deliveryDate) : shortDate(o.deliveryDate)}</span></a></li>`; }).join('')}</ul>`;
       } else {
-        body = `<ul class="list">${all.map((o) => `<li class="card"><div class="row" style="padding:0"><div><b>${esc(o.customerName)}</b><small>${esc(orderText(o))}${o.note ? ' · ' + esc(o.note) : ''}</small></div><span class="pill ${o.deliveryDate < today() ? 'bad' : ''}">${fmtDate(o.deliveryDate)}</span></div>
+        body = `<ul class="list">${all.map((o) => `<li class="card"><div class="row" style="padding:0"><div><b>${esc(o.customerName)}</b><small>${esc(orderText(o))}</small>${noteLine(o)}</div><span class="pill ${o.deliveryDate < today() ? 'bad' : ''}">${fmtDate(o.deliveryDate)}</span></div>
           <div class="contact"><a class="btn small" href="#/deliver/${o.id}">✓ ${t('Delivered')}</a><input type="date" data-od="${o.id}" value="${o.deliveryDate}" style="flex:1;margin:0"><button class="btn small" data-nw="${o.id}">+7</button><button class="btn small danger" style="width:auto" data-ocx="${o.id}">×</button></div></li>`).join('') || `<li class="muted">${t('No pending orders')}</li>`}</ul>`;
       }
       S._orders = all;
@@ -2719,7 +3080,7 @@ async function renderCloseDay() {
     const [cols, exps, visits, closedDoc] = await Promise.all([q('collections'), q('expenses'), q('visits'), F.getDoc(F.sellerDoc(sid, 'dayClose', day))]);
     const fig = L.sellerReport({ collections: cols, expenses: exps });
     const plan = L.dayPlan(day, S.routeChanges, ROUTE_DAYS), seen = new Set();
-    const routeList = plan.days.flatMap((pd) => L.routeSort(Object.values(S.customers).filter((c) => daysOf(c).includes(pd.day) && !seen.has(c.id) && seen.add(c.id)), pd.day));
+    const routeList = plan.days.flatMap((pd) => L.routeSort(Object.values(S.customers).filter((c) => daysOf(c).includes(pd.day) && !seen.has(c.id) && seen.add(c.id)), pd.day)).filter((c) => !pausedCust(c.id));
     const paid = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), vis = new Map(visits.map((v) => [v.customerId, v]));
     const nopay = [...vis.values()].filter((v) => !paid.has(v.customerId));
     const notSeen = routeList.filter((c) => !paid.has(c.id) && !vis.has(c.id));
@@ -2727,7 +3088,7 @@ async function renderCloseDay() {
     const name = (id) => S.customers[id]?.name || '?';
     const closed = closedDoc.exists() ? closedDoc.data() : null;
     const text = [`*${APP_NAME} — ${t('Day closing')}*`, `${S.profile.role === 'admin' ? sellerName(sid) : S.profile.name} · ${fmtDate(day)}`, '',
-      `${t('Collected')}: *${money(fig.collected)}* (${cols.filter((x) => x.kind !== 'discount').length})`, `  ${t('Cash')} ${money(fig.collectedCash)} · UPI ${money(fig.collectedUpi)}${fig.collectedScrap ? ` · ${t('Scrap')} ${money(fig.collectedScrap)}` : ''}`,
+      `${t('Collected')}: *${money(fig.collected)}* (${cols.filter((x) => x.kind !== 'discount' && x.kind !== 'refund').length})`, `  ${t('Cash')} ${money(fig.collectedCash)} · UPI ${money(fig.collectedUpi)}${fig.collectedScrap ? ` · ${t('Scrap')} ${money(fig.collectedScrap)}` : ''}`,
       `${t('Expenses')}: ${money(fig.expense)} (${t('Cash')} ${money(fig.expenseCash)} · UPI ${money(fig.expenseUpi)})`, `*${t('Cash in hand')}: ${money(fig.cashInHand)}*`, '',
       routeList.length ? `${t('Route')}: ${visited}/${routeList.length} ${t('visited')}` : '',
       nopay.length ? `${t('No payment')}: ${nopay.map((v) => `${name(v.customerId)} (${reasonLabel(v.reason)}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''})`).join(', ')}` : '',
@@ -2736,7 +3097,7 @@ async function renderCloseDay() {
       <div class="toolbar"><input type="date" id="cdd" value="${day}" max="${today()}"></div>
       ${closed ? `<div class="banner">✓ ${t('Closed at')} ${new Date(closed.closedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>` : ''}
       <div class="card">
-        <div class="kv"><span>${t('Collected')} (${cols.filter((x) => x.kind !== 'discount').length})</span><b>${money(fig.collected)}</b></div>
+        <div class="kv"><span>${t('Collected')} (${cols.filter((x) => x.kind !== 'discount' && x.kind !== 'refund').length})</span><b>${money(fig.collected)}</b></div>
         <div class="kv small"><span>— ${t('Cash')}</span><span>${money(fig.collectedCash)}</span></div>
         <div class="kv small"><span>— UPI</span><span>${money(fig.collectedUpi)}</span></div>
         ${fig.collectedScrap ? `<div class="kv small"><span>— ${t('Scrap')}</span><span>${money(fig.collectedScrap)}</span></div>` : ''}
