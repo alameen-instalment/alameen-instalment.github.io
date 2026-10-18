@@ -242,7 +242,7 @@ const routes = [
   [/^#\/sale\/(\w+)\/(\w+)$/, renderSale],
   [/^#\/collect\/(\w+)\/(\w+)$/, renderCollect],
   [/^#\/return\/(\w+)\/(\w+)$/, renderReturn],
-  [/^#\/pick\/(sale|collect)$/, renderPick],
+  [/^#\/pick\/(sale|collect|order)$/, renderPick],
   [/^#\/complaints$/, renderComplaints],
   [/^#\/expenses$/, () => renderExpenses(false)],
   [/^#\/company-expenses$/, () => renderExpenses(true)],
@@ -344,8 +344,9 @@ async function renderHome() {
     <div class="grid2">
       <a class="tile primary" href="#/pick/collect">+ ${t('Collection')}</a>
       <a class="tile" href="#/pick/sale">+ ${t('New sale')}</a>
+      <a class="tile" href="#/pick/order">🚚 + ${t('Order')}</a>
       <a class="tile" href="#/cash-sale">🛒 ${t('Cash sale')}</a>
-      <a class="tile" href="#/expenses">+ ${t('Expense')}</a>
+      <a class="tile wide" href="#/expenses">+ ${t('Expense')}</a>
     </div>
     <a class="btn ghost" href="#/close-day">${closed ? '✓ ' + t('Day closed — view') : '🌙 ' + t('Close today')}</a>
     <h3>${t("Today's tasks")} ${due.length ? `<span class="pill bad">${due.length}</span>` : ''}</h3>
@@ -922,6 +923,8 @@ function renderCustomerForm(id) {
     F.commit(b, onWriteError);
     toast(t('Saved'));
     if (pendNow) rescoreSoon(cid);
+    let after = ''; try { after = sessionStorage.getItem('afterNewCustomer') || ''; sessionStorage.removeItem('afterNewCustomer'); } catch {}
+    if (!pendNow && after === 'order') { try { sessionStorage.setItem('orderBack', '#/orders'); } catch {} return go(`#/order/${cid}`); }
     go(pendNow ? `#/account/${cid}/${firstAid}` : `#/customer/${cid}`);
   };
 }
@@ -1084,17 +1087,23 @@ async function renderCustomer(cid) {
 
 // ---------- pick customer for quick actions ----------
 function renderPick(action) {
-  setTitle(action === 'sale' ? t('New sale') : t('Collection'), '#/home');
+  setTitle(action === 'sale' ? t('New sale') : action === 'order' ? t('New order') : t('Collection'), action === 'order' ? '#/orders' : '#/home');
   if (needSeller()) return;
+  try { sessionStorage.setItem('afterNewCustomer', action === 'order' ? 'order' : ''); } catch {}
   const draw = () => {
     const qv = ($('#q')?.value || '').toLowerCase();
+    // today's route first, then by name
+    const plan = todayPlan();
     const list = Object.values(S.customers).filter((c) => searchHit(c, qv))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    $('#plist').innerHTML = list.flatMap((c) => accountsOf(c.id).filter((a) => a.status !== 'closed').map((a) =>
-      `<li><a class="row" href="#/${action}/${c.id}/${a.id}"><div>${placeBadge(c)}<b>${esc(c.name)}</b><small>${esc(a.name)} · ${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`)).join('')
-      || `<li class="muted">${t('No matching customer')} · <a href="#/customer-new">${t('Add customer')}</a></li>`;
+      .sort((a, b) => (onTodayRoute(b, plan) - onTodayRoute(a, plan)) || a.name.localeCompare(b.name));
+    $('#plist').innerHTML = (action === 'order'
+      ? list.map((c) => `<li><a class="row" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${placeBadge(c)}<b>${esc(c.name)}</b><small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`).join('')
+      : list.flatMap((c) => accountsOf(c.id).filter((a) => a.status !== 'closed').map((a) =>
+        `<li><a class="row" href="#/${action}/${c.id}/${a.id}"><div>${placeBadge(c)}<b>${esc(c.name)}</b><small>${esc(a.name)} · ${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`)).join(''))
+      || `<li class="muted">${t('No matching customer')}</li>`;
+    $$('[data-pick-order]').forEach((a) => (a.onclick = () => { try { sessionStorage.setItem('orderBack', '#/orders'); } catch {} }));
   };
-  view.innerHTML = `<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}" autofocus></div><ul class="list" id="plist"></ul>`;
+  view.innerHTML = `<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}" autofocus><a class="btn" href="#/customer-new">+ ${t('New customer')}</a></div><ul class="list" id="plist"></ul>`;
   $('#q').oninput = draw;
   draw();
 }
@@ -2593,7 +2602,8 @@ async function renderOrderForm(cid, oid) {
     const items = $$('.orderline', f).map((r) => ({ name: $('[name=on]', r).value.trim(), qty: Math.max(1, Math.round(num($('[name=oq]', r).value))) })).filter((i) => i.name);
     if (!items.length) return toast(t('Add at least one item'), true);
     save({ items, deliveryDate: f.dd.value, note: f.note.value.trim(), customerName: c.name });
-    toast(t('Order saved')); go(`#/customer/${cid}`);
+    let back = ''; try { back = sessionStorage.getItem('orderBack') || ''; sessionStorage.removeItem('orderBack'); } catch {}
+    toast(t('Order saved')); go(back || `#/customer/${cid}`);
   };
   const nw = $('#nw'), cx = $('#ocx');
   if (nw) nw.onclick = () => { save({ deliveryDate: L.addDays(o.deliveryDate, 7) }); toast(t('Moved to') + ' ' + fmtDate(L.addDays(o.deliveryDate, 7))); history.back(); };
@@ -2631,7 +2641,7 @@ async function renderOrders() {
   let day = today();
   const draw = async () => {
     try { sessionStorage.setItem('ordTab', tab); } catch {}
-    const tabs = `${sellerBar()}<div class="tabs">${S.sid ? `<button data-ot="carry" class="${tab === 'carry' ? 'on' : ''}">${t('To carry')}</button>` : ''}
+    const tabs = `${sellerBar()}${S.sid ? `<a class="btn primary block" id="newOrd" href="#/pick/order" style="margin-bottom:8px">+ ${t('New order')}</a>` : ''}<div class="tabs">${S.sid ? `<button data-ot="carry" class="${tab === 'carry' ? 'on' : ''}">${t('To carry')}</button>` : ''}
       <button data-ot="buy" class="${tab === 'buy' ? 'on' : ''}">${t('To buy')}</button>${S.sid ? `<button data-ot="all" class="${tab === 'all' ? 'on' : ''}">${t('All pending')}</button>` : ''}</div>`;
     view.innerHTML = tabs + '<div class="loading">…</div>';
     let body = '';
