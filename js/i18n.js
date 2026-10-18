@@ -634,6 +634,15 @@ const ML = {
   'Error': 'തെറ്റ്',
   'Enter the quantity of every item': 'എല്ലാ സാധനങ്ങളുടെയും എണ്ണം ചേർക്കുക',
   'The photo is still loading. Try again in a moment.': 'ഫോട്ടോ ലോഡ് ആകുന്നതേയുള്ളൂ. അൽപ്പം കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക.',
+  'day already closed — open Close today and send again': 'ഈ ദിവസം ക്ലോസ് ചെയ്തതാണ് — Close today തുറന്ന് വീണ്ടും അയക്കുക',
+  'Scrap: delete and enter again to change it.': 'സ്ക്രാപ്പ്: മാറ്റാൻ ഡിലീറ്റ് ചെയ്ത് വീണ്ടും ചേർക്കുക.',
+  'Advance of a sale: 0 removes it.': 'സെയിലിന്റെ അഡ്വാൻസ്: 0 ആക്കിയാൽ ഒഴിവാകും.',
+  'Cash sale: only Cash / UPI can change here. For a wrong amount the admin voids it in Cash sales.': 'ക്യാഷ് സെയിൽ: ഇവിടെ Cash / UPI മാത്രം മാറ്റാം. തുക തെറ്റിയാൽ അഡ്മിൻ Cash sales-ൽ Void ചെയ്യണം.',
+  'people': 'പേർ',
+  'No collections on this day': 'ഈ ദിവസം കളക്ഷൻ ഇല്ല',
+  'Discounts': 'ഡിസ്കൗണ്ടുകൾ',
+  'Delete this entry?': 'ഈ എൻട്രി ഡിലീറ്റ് ചെയ്യണോ?',
+  'Amount 0 deletes this collection. Continue?': 'തുക 0 ആക്കിയാൽ ഈ കളക്ഷൻ ഡിലീറ്റ് ആകും. തുടരണോ?',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();

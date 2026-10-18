@@ -263,6 +263,7 @@ const routes = [
   [/^#\/order-edit\/(\w+)$/, (oid) => renderOrderForm(null, oid)],
   [/^#\/deliver\/(\w+)$/, renderDeliver],
   [/^#\/close-day$/, renderCloseDay],
+  [/^#\/collections$/, renderCollections],
   [/^#\/cash-sale$/, renderCashSale],
   [/^#\/catalog$/, renderCatalog],
   [/^#\/catalog-edit\/([\w-]+)$/, renderCatalogEdit],
@@ -334,8 +335,8 @@ async function renderHome() {
   const alerts = L.routeAlerts(d, allEvents(), S.routeChanges, busy, 2, ROUTE_DAYS);
   view.innerHTML = sellerBar() + `
     <div class="stats">
-      <div class="stat"><span>${t("Today's collection")}</span><b>${money(fig.collected)}</b><small>${splitLine(fig.collectedCash, fig.collectedUpi, fig.collectedScrap)}</small></div>
-      <div class="stat"><span>${t('Cash in hand')}</span><b>${money(fig.cashInHand)}</b><small>${t('Expenses')} ${money(fig.expense)}</small></div>
+      <a class="stat" href="#/collections" id="colStat" onclick="try{sessionStorage.setItem('colDay','')}catch(e){}"><span>${t("Today's collection")} ›</span><b>${money(fig.collected)}</b><small>${splitLine(fig.collectedCash, fig.collectedUpi, fig.collectedScrap)}</small></a>
+      <a class="stat" href="#/expenses"><span>${t('Cash in hand')} ›</span><b>${money(fig.cashInHand)}</b><small>${t('Expenses')} ${money(fig.expense)}</small></a>
     </div>
     ${alerts.map(alertCard).join('')}
     ${routeTile(new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), new Set(visits.map((v) => v.customerId)))}
@@ -2681,6 +2682,117 @@ async function renderOrders() {
     $$('[data-od]').forEach((i) => (i.onchange = () => i.value && upd(i.dataset.od, { deliveryDate: i.value })));
     $$('[data-nw]').forEach((b) => (b.onclick = () => { const o = S._orders.find((x) => x.id === b.dataset.nw); upd(o.id, { deliveryDate: L.addDays(o.deliveryDate, 7) }); }));
     $$('[data-ocx]').forEach((b) => (b.onclick = () => { if (confirm(t('Cancel this order?'))) upd(b.dataset.ocx, { status: 'cancelled', cancelledOn: today() }); }));
+  };
+  await draw();
+}
+
+// ---------- collections of a day: list, edit, delete ----------
+const KIND_LABEL = { collection: 'Collection', advance: 'Advance', cash: 'Cash sale', refund: 'Refund', discount: 'Discount' };
+/** Remove a collection or discount from its account (balance and open items put back). */
+function removeCollection(b, sid, col) {
+  b.delete(F.sellerDoc(sid, 'collections', col.id));
+  if (col.mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', col.id));
+  else if (col.kind !== 'discount' && col.customerId) b.update(F.sellerDoc(sid, 'customers', col.customerId), { [`modeCounts.${col.mode === 'upi' ? 'upi' : 'cash'}`]: F.increment(-1) });
+  const a = S.accounts[col.accountId];
+  if (a) { const q = L.reverseAllocations(a.queue || [], col.allocations); b.update(F.sellerDoc(sid, 'accounts', a.id), { queue: q, balance: F.increment(col.amount) }); a.queue = q; a.balance = L.round2(a.balance + col.amount); }
+  if (col.kind === 'advance' && col.saleId) b.update(F.sellerDoc(sid, 'sales', col.saleId), { advance: F.increment(-col.amount) });
+}
+async function closedReminder(sid, dates) {
+  for (const d of new Set(dates)) {
+    const x = await F.getDoc(F.sellerDoc(sid, 'dayClose', d)).catch(() => null);
+    if (x?.exists()) { toast(`${fmtDate(d)}: ${t('day already closed — open Close today and send again')}`); return; }
+  }
+}
+/**
+ * Edit one collection. patch: {amount?, mode?, date?, note?}. A new amount puts the old one back on the account's
+ * open items and allocates the new one (an advance goes to its own sale first); the balance moves by the difference.
+ */
+function editCollection(sid, col, patch) {
+  const b = F.writeBatch(F.db), upd = {}, a = S.accounts[col.accountId];
+  const amt = patch.amount != null ? L.round2(patch.amount) : col.amount;
+  if (col.kind !== 'cash' && amt !== col.amount) {
+    if (amt <= 0) { removeCollection(b, sid, col); F.audit(b, S.user.uid, 'collection-delete', `sellers/${sid}/collections/${col.id}`, col, null); F.commit(b, onWriteError); return 'deleted'; }
+    if (!a) { toast(t('Account not found'), true); return false; }
+    const r = L.allocate(L.reverseAllocations(a.queue || [], col.allocations), amt, col.kind === 'advance' ? col.saleId : null);
+    Object.assign(upd, { amount: amt, allocations: r.allocations, profit: r.profit });
+    b.update(F.sellerDoc(sid, 'accounts', a.id), { queue: r.queue, balance: F.increment(L.round2(col.amount - amt)) });
+    a.queue = r.queue; a.balance = L.round2(a.balance + col.amount - amt);
+    if (col.kind === 'advance' && col.saleId) b.update(F.sellerDoc(sid, 'sales', col.saleId), { advance: F.increment(L.round2(amt - col.amount)) });
+  }
+  if (patch.mode && patch.mode !== col.mode && col.mode !== 'scrap') {
+    upd.mode = patch.mode;
+    if (col.customerId) b.update(F.sellerDoc(sid, 'customers', col.customerId), { [`modeCounts.${col.mode === 'upi' ? 'upi' : 'cash'}`]: F.increment(-1), [`modeCounts.${patch.mode}`]: F.increment(1) });
+  }
+  if (col.kind === 'collection' && patch.date && patch.date !== col.date) upd.date = patch.date;
+  if (col.kind === 'collection' && patch.note != null && patch.note !== (col.note || '')) upd.note = patch.note;
+  if (!Object.keys(upd).length) return false;
+  b.update(F.sellerDoc(sid, 'collections', col.id), upd);
+  F.audit(b, S.user.uid, 'collection-edit', `sellers/${sid}/collections/${col.id}`, { amount: col.amount, mode: col.mode, date: col.date, note: col.note || '' }, upd);
+  F.commit(b, onWriteError);
+  return 'saved';
+}
+
+async function renderCollections() {
+  setTitle(t('Collections'), '#/home');
+  if (needSeller()) return;
+  const sid = S.sid;
+  let day = (() => { try { return sessionStorage.getItem('colDay') || today(); } catch { return today(); } })();
+  let open = null;
+  const draw = async () => {
+    try { sessionStorage.setItem('colDay', day); } catch {}
+    const cols = (await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', day)))).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0));
+    const fig = L.sellerReport({ collections: cols });
+    const pays = cols.filter((c) => c.kind !== 'discount'), discs = cols.filter((c) => c.kind === 'discount');
+    const people = new Set(pays.filter((c) => c.kind !== 'refund').map((c) => c.customerId || 'cash:' + c.saleId)).size;
+    const time = (ms) => (ms ? new Date(ms).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }) : '');
+    const who = (c) => (c.cash ? `🛒 ${esc(c.buyerName || t('Walk-in buyer'))}` : esc(S.customers[c.customerId]?.name || '?'));
+    const link = (c) => (c.cash ? '#/cash-sales' : `#/account/${c.customerId}/${c.accountId}`);
+    const row = (c) => {
+      const editable = c.kind === 'collection' || c.kind === 'advance' || (c.kind === 'cash' && c.mode !== 'scrap');
+      const canDel = c.kind === 'collection' || c.kind === 'discount';
+      return `<li class="card colrow"><div class="row" style="padding:0">
+        <a href="${link(c)}" style="flex:1;text-decoration:none;color:inherit"><b>${who(c)}</b>
+          <small>${time(c.createdAt)} · ${esc(S.accounts[c.accountId]?.name || '')}${c.accountId ? ' · ' : ''}${t(KIND_LABEL[c.kind] || 'Collection')}${c.kind === 'discount' ? '' : ' · ' + modeLabel(c.mode)}${c.note ? ' · ' + esc(c.note) : ''}</small></a>
+        <div class="amt">${money(c.amount)}</div></div>
+        ${editable || canDel ? `<div class="contact">${editable ? `<button class="btn small" data-ed="${c.id}">✏️ ${t('Edit')}</button>` : ''}${canDel ? `<button class="btn small danger" style="width:auto" data-cdel="${c.id}">× ${t('Delete')}</button>` : ''}</div>` : ''}
+        ${open === c.id ? `<form class="form edbox" data-edf="${c.id}">
+          ${c.kind !== 'cash' ? `<label>${t('Amount')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" value="${c.amount}"></label>` : ''}
+          ${c.mode !== 'scrap' ? `<label>${t('Paid by')}</label>${payPicker('em_' + c.id, c.mode)}` : `<div class="small muted">${t('Scrap: delete and enter again to change it.')}</div>`}
+          ${c.kind === 'collection' ? `<div class="two"><label>${t('Date')}<input name="date" type="date" value="${c.date}" max="${today()}"></label><label>${t('Note')}<input name="note" value="${esc(c.note || '')}"></label></div>` : ''}
+          ${c.kind === 'advance' ? `<div class="small muted">${t('Advance of a sale: 0 removes it.')}</div>` : c.kind === 'cash' ? `<div class="small muted">${t('Cash sale: only Cash / UPI can change here. For a wrong amount the admin voids it in Cash sales.')}</div>` : ''}
+          <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" data-edx>${t('Cancel')}</button></div></form>` : ''}</li>`;
+    };
+    view.innerHTML = sellerBar() + `
+      <div class="toolbar"><input type="date" id="cdate" value="${day}" max="${today()}"></div>
+      <div class="card"><div class="kv"><span>${t('Collected')} · ${people} ${t('people')}</span><b>${money(fig.collected)}</b></div>
+        <div class="small muted">${splitLine(fig.collectedCash, fig.collectedUpi, fig.collectedScrap)}</div></div>
+      <ul class="list">${pays.map(row).join('') || `<li class="muted">${t('No collections on this day')}</li>`}</ul>
+      ${discs.length ? `<h3>💸 ${t('Discounts')}</h3><ul class="list">${discs.map(row).join('')}</ul>` : ''}`;
+    bindSellerBar();
+    $('#cdate').onchange = (e) => { day = e.target.value || today(); open = null; draw(); };
+    const find = (id) => cols.find((x) => x.id === id);
+    $$('[data-ed]').forEach((b) => (b.onclick = () => { open = open === b.dataset.ed ? null : b.dataset.ed; draw(); }));
+    $$('[data-edx]').forEach((b) => (b.onclick = () => { open = null; draw(); }));
+    $$('[data-cdel]').forEach((b) => (b.onclick = () => {
+      const c = find(b.dataset.cdel);
+      if (!c || !confirm(`${t('Delete this entry?')}\n${S.customers[c.customerId]?.name || ''} · ${money(c.amount)}`)) return;
+      const bt = F.writeBatch(F.db); removeCollection(bt, sid, c);
+      F.audit(bt, S.user.uid, c.kind === 'discount' ? 'discount-delete' : 'collection-delete', `sellers/${sid}/collections/${c.id}`, c, null);
+      F.commit(bt, onWriteError); toast(t('Deleted')); if (c.customerId) rescoreSoon(c.customerId); closedReminder(sid, [c.date]); setTimeout(draw, 300);
+    }));
+    $$('[data-edf]').forEach((f) => (f.onsubmit = (e) => {
+      e.preventDefault();
+      const c = find(f.dataset.edf), patch = {};
+      if (f.amt) { const v = Number(String(f.amt.value).replace(/,/g, '')); if (!Number.isFinite(v) || v < 0) return toast(t('Enter a valid amount'), true); patch.amount = v; }
+      if (c.mode !== 'scrap') patch.mode = pickedMode('em_' + c.id, f);
+      if (f.date) patch.date = f.date.value || c.date;
+      if (f.note) patch.note = f.note.value.trim();
+      if (patch.amount === 0 && c.kind === 'collection' && !confirm(t('Amount 0 deletes this collection. Continue?'))) return;
+      const res = editCollection(sid, c, patch);
+      if (!res) { open = null; return draw(); }
+      toast(res === 'deleted' ? t('Deleted') : t('Saved')); open = null;
+      if (c.customerId) rescoreSoon(c.customerId); closedReminder(sid, [c.date, patch.date || c.date]); setTimeout(draw, 300);
+    }));
   };
   await draw();
 }
