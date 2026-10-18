@@ -5,24 +5,14 @@ import { APP_NAME, ADMIN_USERNAME } from './config.js';
 import { KERALA_HOLIDAYS } from './holidays.js';
 
 // ---------- state ----------
-const DEFAULT_MODEL = 'gemini-flash-latest';
-const DEFAULT_CATEGORIES = ['Crockery', 'Furniture', 'Electronics', 'Carpet/Mat', 'Others'];
 const DEFAULT_SCRAP_TYPES = ['Aluminium', 'Steel', 'Ottu', 'Copper', 'Others'];
 const S = {
   user: null, profile: null, sid: null,
-  users: {}, settings: { defaultMarginPct: 100, legacyMarginPct: 85, geminiKey: '', geminiModel: DEFAULT_MODEL },
-  stock: {}, customers: {}, accounts: {}, complaints: {}, catalog: {}, events: {}, routeChanges: {}, nameMap: {}, phoneIdx: {}, meals: {},
+  users: {}, settings: { defaultMarginPct: 100, legacyMarginPct: 85 },
+  customers: {}, accounts: {}, complaints: {}, catalog: {}, events: {}, routeChanges: {}, phoneIdx: {}, meals: {}, itemNames: [], itemPrices: {},
   subs: [], sellerSubs: [], refresh: null,
 };
-const categories = () => (S.settings.categories?.length ? S.settings.categories : DEFAULT_CATEGORIES);
 const scrapTypes = () => (S.settings.scrapTypes?.length ? S.settings.scrapTypes : DEFAULT_SCRAP_TYPES);
-const catOf = (s) => (s?.category && categories().includes(s.category) ? s.category : 'Others');
-/** Category of a sale line: follows renames; falls back to the stock item's category. */
-const lineCat = (l) => {
-  let c = l.category; const rn = S.settings.categoryRenames || {};
-  for (let i = 0; i < 6 && c && rn[c]; i++) c = rn[c];
-  return c && categories().includes(c) ? c : catOf(S.stock[l.stockId]);
-};
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -128,34 +118,26 @@ function loadScript(src) {
 
 // ---------- subscriptions ----------
 function subscribeGlobal() {
-  S.subs.forEach((u) => u()); S.subs = []; S.stockReady = S.catalogReady = false;
+  S.subs.forEach((u) => u()); S.subs = [];
   S.subs.push(F.onSnapshot(F.doc(F.db, 'settings', 'main'), (d) => {
     if (d.exists()) Object.assign(S.settings, d.data());
-    if (isAdmin() && !S.settings.movesV1) setTimeout(backfillMoves, 4000);
   }));
   S.subs.push(F.onSnapshot(F.collection(F.db, 'users'), (qs) => {
     S.users = {}; qs.forEach((d) => (S.users[d.id] = d.data()));
     if (isAdmin() && !S.sid) { const saved = localStorage.getItem('sid'); if (saved && sellers().some((x) => x.id === saved)) selectSeller(saved); }
     live();
   }));
-  S.subs.push(F.onSnapshot(F.collection(F.db, 'stock'), (qs) => { S.stock = {}; qs.forEach((d) => (S.stock[d.id] = { id: d.id, ...d.data() })); S.stockReady = true; syncCatalogSoon(); live(); }));
   S.subs.push(F.onSnapshot(F.query(F.collection(F.db, 'complaints'), F.where('status', '==', 'open')), (qs) => {
     S.complaints = {}; qs.forEach((d) => (S.complaints[d.id] = { id: d.id, ...d.data() })); live();
   }));
-  S.subs.push(F.onSnapshot(F.collection(F.db, 'catalog'), (qs) => { S.catalog = {}; qs.forEach((d) => (S.catalog[d.id] = { id: d.id, ...d.data() })); S.catalogReady = true; syncCatalogSoon(); }));
+  S.subs.push(F.onSnapshot(F.collection(F.db, 'catalog'), (qs) => { S.catalog = {}; qs.forEach((d) => (S.catalog[d.id] = { id: d.id, ...d.data() })); }));
   S.subs.push(F.onSnapshot(F.collection(F.db, 'events'), (qs) => { S.events = {}; qs.forEach((d) => (S.events[d.id] = { id: d.id, ...d.data() })); live(); }));
-  S.subs.push(F.onSnapshot(F.collection(F.db, 'nameMap'), (qs) => { S.nameMap = {}; qs.forEach((d) => (S.nameMap[d.id] = { id: d.id, ...d.data() })); }));
   S.subs.push(F.onSnapshot(F.collection(F.db, 'phoneIndex'), (qs) => {
     S.phoneIdx = {}; qs.forEach((d) => { const x = { id: d.id, ...d.data() }; (S.phoneIdx[x.hash] ||= []).push(x); }); live();
   }));
   if (!isAdmin()) subscribeMeals();
 }
 
-/**
- * Keep the public catalog's Available/Sold-out tag and price in step with stock.
- * Any logged-in phone does this after stock changes; it only writes when something differs.
- */
-let syncTimer = null;
 let mealsSub = null, mealsDay = '';
 function subscribeMeals() {
   if (mealsDay === today() && mealsSub) return;
@@ -165,28 +147,18 @@ function subscribeMeals() {
   S.subs.push(() => { if (mealsSub) mealsSub(); mealsSub = null; mealsDay = ''; });
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.profile && !isAdmin() && mealsDay && mealsDay !== today()) subscribeMeals(); });
-function syncCatalogSoon() { clearTimeout(syncTimer); syncTimer = setTimeout(syncCatalog, 1500); }
-function syncCatalog() {
-  if (!S.stockReady || !S.catalogReady) return; // never judge "sold out" before stock has loaded
-  const lots = {};
-  Object.values(S.stock).forEach((s) => (lots[L.nameKey(s.name)] ||= []).push(s));
-  const b = F.writeBatch(F.db); let n = 0;
-  for (const c of Object.values(S.catalog)) {
-    const ls = lots[c.id] || [], live = ls.filter((x) => x.qty > 0);
-    const available = live.length > 0;
-    const price = Math.max(0, ...(live.length ? live : ls).map((x) => Number(x.maxPrice) || 0)) || c.price || 0;
-    if (c.available !== available || c.price !== price) { b.update(F.doc(F.db, 'catalog', c.id), { available, price }); n++; }
-  }
-  if (n) F.commit(b, () => {});
-}
 
 function selectSeller(sid) {
   S.sellerSubs.forEach((u) => u()); S.sellerSubs = [];
-  S.sid = sid || null; S.customers = {}; S.accounts = {}; S.routeChanges = {};
+  S.sid = sid || null; S.customers = {}; S.accounts = {}; S.routeChanges = {}; S.itemNames = []; S.itemPrices = {};
   if (isAdmin()) localStorage.setItem('sid', sid || '');
   if (!sid) return;
   S.sellerSubs.push(F.onSnapshot(F.sellerCol(sid, 'routeChanges'), (qs) => { S.routeChanges = {}; qs.forEach((d) => (S.routeChanges[d.id] = { id: d.id, ...d.data() })); live(); }));
   S.sellerSubs.push(F.onSnapshot(F.sellerCol(sid, 'customers'), (qs) => { S.customers = {}; qs.forEach((d) => (S.customers[d.id] = { id: d.id, ...d.data() })); live(); }));
+  S.sellerSubs.push(F.onSnapshot(F.sellerDoc(sid, 'meta', 'items'), (d) => {
+    const x = d.exists() ? d.data() : {}, its = Object.entries(x).filter(([k, v]) => k.startsWith('i_') && v && v.name);
+    S.itemNames = its.map(([, v]) => v.name); S.itemPrices = Object.fromEntries(its.map(([k, v]) => [k.slice(2), v.price]));
+  }));
   S.sellerSubs.push(F.onSnapshot(F.sellerCol(sid, 'accounts'), (qs) => { S.accounts = {}; qs.forEach((d) => (S.accounts[d.id] = { id: d.id, ...d.data() })); live(); }));
 }
 
@@ -213,7 +185,7 @@ F.onAuthStateChanged(F.auth, async (user) => {
     if (!snap.exists() && user.email === F.emailOf(ADMIN_USERNAME)) {
       await F.setDoc(ref, { username: ADMIN_USERNAME, name: 'Admin', role: 'admin', active: true });
       const st = F.doc(F.db, 'settings', 'main');
-      if (!(await F.getDoc(st)).exists()) await F.setDoc(st, { defaultMarginPct: 100, legacyMarginPct: 85, geminiKey: '', geminiModel: DEFAULT_MODEL });
+      if (!(await F.getDoc(st)).exists()) await F.setDoc(st, { defaultMarginPct: 100, legacyMarginPct: 85 });
       snap = await F.getDoc(ref);
     }
     if (!snap.exists() || snap.data().active === false) { toast(t('This login is not active'), true); await F.logout(); return; }
@@ -271,10 +243,6 @@ const routes = [
   [/^#\/collect\/(\w+)\/(\w+)$/, renderCollect],
   [/^#\/return\/(\w+)\/(\w+)$/, renderReturn],
   [/^#\/pick\/(sale|collect)$/, renderPick],
-  [/^#\/stock$/, renderStock],
-  [/^#\/purchase(?:\/(photo))?$/, renderPurchase],
-  [/^#\/stock-edit\/(\w+)$/, renderStockEdit],
-  [/^#\/item\/([\w-]+)$/, renderItem],
   [/^#\/complaints$/, renderComplaints],
   [/^#\/expenses$/, () => renderExpenses(false)],
   [/^#\/company-expenses$/, () => renderExpenses(true)],
@@ -296,10 +264,12 @@ const routes = [
   [/^#\/deliver\/(\w+)$/, renderDeliver],
   [/^#\/close-day$/, renderCloseDay],
   [/^#\/cash-sale$/, renderCashSale],
+  [/^#\/catalog$/, renderCatalog],
+  [/^#\/catalog-edit\/([\w-]+)$/, renderCatalogEdit],
   [/^#\/cash-sales$/, renderCashSales],
   [/^#\/cash-return\/(\w+)$/, renderCashReturn],
 ];
-const adminOnly = ['#/company-expenses', '#/users', '#/app-settings', '#/backup', '#/categories', '#/scrap'];
+const adminOnly = ['#/company-expenses', '#/users', '#/app-settings', '#/backup', '#/categories', '#/scrap', '#/catalog'];
 
 async function route() {
   if (!S.profile) return;
@@ -334,9 +304,10 @@ async function renderHome() {
       <a class="tile" href="#/scrap">♻️ ${t('Scrap')}</a>
       <a class="tile" href="#/users">${t('Users')}</a></div>
       <div class="empty">${t('Choose a seller above to work on their customers.')}</div>
-      <div id="calw"></div>`;
+      <div id="calw"></div>
+      <h3>🧮 ${t('Calculator')}</h3><div id="calcw"></div>`;
     bindSellerBar();
-    mountCalendar($('#calw'));
+    mountCalendar($('#calw')); mountCalculator($('#calcw'));
     return;
   }
   const d = today(), sid = S.sid;
@@ -375,18 +346,18 @@ async function renderHome() {
       <a class="tile" href="#/pick/sale">+ ${t('New sale')}</a>
       <a class="tile" href="#/cash-sale">🛒 ${t('Cash sale')}</a>
       <a class="tile" href="#/expenses">+ ${t('Expense')}</a>
-      <a class="tile wide" href="#/purchase/photo">📷 ${t('Stock from bill')}</a>
     </div>
     <a class="btn ghost" href="#/close-day">${closed ? '✓ ' + t('Day closed — view') : '🌙 ' + t('Close today')}</a>
     <h3>${t("Today's tasks")} ${due.length ? `<span class="pill bad">${due.length}</span>` : ''}</h3>
     <ul class="list">${due.map(noteRow).join('') || `<li class="muted">${t('Nothing due')}</li>`}</ul>
     ${soon.length ? `<h3>${t('Upcoming')}</h3><ul class="list">${soon.map(noteRow).join('')}</ul>` : ''}
     <div id="mealw">${mealCard()}</div>
-    <h3>${t('Calendar')}</h3><div id="calw"></div>`;
+    <h3>${t('Calendar')}</h3><div id="calw"></div>
+    <h3>🧮 ${t('Calculator')}</h3><div id="calcw"></div>`;
   bindSellerBar();
   bindAlerts();
   bindMeal();
-  mountCalendar($('#calw'));
+  mountCalendar($('#calw')); mountCalculator($('#calcw'));
   setTimeout(maintainBook, 3000);
   const rt = $('#routeTile'); if (rt) rt.onclick = () => { try { sessionStorage.setItem('custDay', 'today'); } catch {} go('#/customers'); };
   $$('[data-done]').forEach((cb) => (cb.onchange = () => {
@@ -1336,7 +1307,7 @@ async function renderAccount(cid, aid) {
 }
 
 /**
- * Admin: cancel a sale entered by mistake. Puts unreturned items back in stock, removes its advance,
+ * Admin: cancel a sale entered by mistake. Removes the sale and its advance,
  * and re-runs every other collection on the account so balances and realised profit stay right.
  */
 async function voidSale(sid, cid, aid, a0, data0, saleId) {
@@ -1348,12 +1319,11 @@ async function voidSale(sid, cid, aid, a0, data0, saleId) {
   const adv = data.collections.filter((c) => c.kind === 'advance' && c.saleId === saleId);
   const advTotal = L.round2(adv.reduce((s2, c) => s2 + c.amount, 0));
   const msg = `${t('Void this sale?')}\n${fmtDate(sale.date)} · ${sale.items.map((i) => `${i.name} × ${i.qty}`).join(', ')} · ${money(sale.saleValue)}` +
-    (adv.length ? `\n${t('Its advance of')} ${money(advTotal)} ${t('will also be removed.')}` : '') + `\n${t('Items go back to stock.')}`;
+    (adv.length ? `\n${t('Its advance of')} ${money(advTotal)} ${t('will also be removed.')}` : '');
   if (!confirm(msg)) return false;
   const v = L.voidFromQueue(a.queue || [], saleId, data.collections.filter((c) => !adv.includes(c)));
   const b = F.writeBatch(F.db);
   b.delete(F.sellerDoc(sid, 'sales', saleId));
-  sale.items.forEach((_, i) => b.delete(F.doc(F.db, 'stockMoves', `sale_${saleId}_${i}`)));
   adv.forEach((c) => {
     b.delete(F.sellerDoc(sid, 'collections', c.id));
     if (c.mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', c.id));
@@ -1361,12 +1331,6 @@ async function voidSale(sid, cid, aid, a0, data0, saleId) {
   });
   v.collections.forEach((nc) => b.update(F.sellerDoc(sid, 'collections', nc.id), { allocations: nc.allocations, profit: nc.profit }));
   b.update(F.sellerDoc(sid, 'accounts', aid), { queue: v.queue, balance: F.increment(L.round2(advTotal - sale.saleValue)) });
-  sale.items.forEach((i) => {
-    const left = i.qty - (i.returned || 0);
-    if (left <= 0) return;
-    if (S.stock[i.stockId]) b.update(F.doc(F.db, 'stock', i.stockId), { qty: F.increment(left) });
-    else { const sc = F.collection(F.db, 'stock'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: left, unitCost: i.unitCost, maxPrice: L.maxPrice(i.unitCost, S.settings.defaultMarginPct), category: i.category || 'Others', addedBy: S.user.uid, createdAt: Date.now() }); }
-  });
   // A sale made when delivering an order: the order goes back to pending.
   const ords = await F.fetchAll(F.query(F.sellerCol(sid, 'orders'), F.where('saleId', '==', saleId)));
   ords.forEach((o) => {
@@ -1381,73 +1345,104 @@ async function voidSale(sid, cid, aid, a0, data0, saleId) {
 }
 
 // ---------- sale ----------
+// ---------- free-typed item lines (no stock) ----------
+// Items are typed with quantity and price. Cost is not entered: it is estimated from the default margin
+// (App settings), so booked and realised profit stay approximate figures.
+const estCost = (price) => L.round2((Number(price) || 0) / (1 + Math.max(0, Number(S.settings.defaultMarginPct) || 0) / 100));
+const knownNames = () => [...new Set([...(S.itemNames || []), ...Object.values(S.catalog).map((c) => c.name)].filter(Boolean))].sort((a, b) => a.localeCompare(b));
+const lastPrice = (name) => { const k = L.nameKey(name); return (S.itemPrices || {})[k] || S.catalog[k]?.price || ''; };
+/** Sale lines saved on the sale: name, qty, price each, estimated cost each. */
+const toSaleLines = (rows) => rows.filter((l) => l.name.trim() && l.qty > 0 && l.price > 0)
+  .map((l) => ({ name: l.name.trim(), qty: Math.round(l.qty), price: L.round2(l.price), unitCost: estCost(l.price), returned: 0 }));
+/** Remember typed item names and their last price for suggestions (per seller book; one field per item, merged). */
+function rememberItems(b, sid, lines) {
+  const upd = {};
+  for (const l of lines) {
+    const k = L.nameKey(l.name);
+    if (S.itemPrices[k] === l.price && (S.itemNames || []).includes(l.name)) continue;
+    upd[`i_${k}`] = { name: l.name, price: l.price, at: Date.now() };
+    S.itemPrices[k] = l.price; if (!S.itemNames.some((n) => L.nameKey(n) === k)) S.itemNames.push(l.name);
+  }
+  if (Object.keys(upd).length) b.set(F.sellerDoc(sid, 'meta', 'items'), upd, { merge: true });
+}
+/**
+ * Item line editor. rows: [{name, qty, price}] (edited in place). onChange(total) after every change.
+ * Typing a known name fills its last price when the price is empty.
+ */
+function mountLines(el, rows, onChange) {
+  if (!rows.length) rows.push({ name: '', qty: 1, price: 0 });
+  const draw = () => {
+    el.innerHTML = `<datalist id="inames">${knownNames().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+      ${rows.map((l, i) => `<div class="iline" data-i="${i}">
+        <input class="in" data-f="name" list="inames" placeholder="${t('Item')}" value="${esc(l.name)}" autocomplete="off">
+        <div class="iline-n"><label>${t('Qty')}<input data-f="qty" type="number" min="1" inputmode="numeric" value="${l.qty || ''}"></label>
+          <label>${t('Price each')}<input data-f="price" type="number" step="any" min="0" inputmode="decimal" value="${l.price || ''}"></label>
+          <div class="ltot"><span>${t('Amount')}</span><b data-lt="${i}">${money(L.round2((l.qty || 0) * (l.price || 0)))}</b></div>
+          <button type="button" class="x" data-rm="${i}" aria-label="${t('Remove')}">×</button></div></div>`).join('')}
+      <button type="button" class="btn ghost small" id="addLine">+ ${t('Another item')}</button>`;
+    $$('.iline', el).forEach((row) => {
+      const i = +row.dataset.i, l = rows[i];
+      $$('[data-f]', row).forEach((inp) => (inp.oninput = () => {
+        const f = inp.dataset.f;
+        if (f === 'name') l.name = inp.value; else l[f] = f === 'qty' ? Math.round(num(inp.value)) : num(inp.value);
+        $(`[data-lt="${i}"]`, el).textContent = money(L.round2((l.qty || 0) * (l.price || 0)));
+        onChange(total());
+      }));
+      $('[data-f=name]', row).onchange = () => {
+        const pr = $('[data-f=price]', row);
+        if (!num(pr.value) && lastPrice(l.name)) { l.price = lastPrice(l.name); pr.value = l.price; $(`[data-lt="${i}"]`, el).textContent = money(L.round2((l.qty || 0) * l.price)); onChange(total()); }
+      };
+    });
+    $$('[data-rm]', el).forEach((btn) => (btn.onclick = () => { rows.splice(+btn.dataset.rm, 1); if (!rows.length) rows.push({ name: '', qty: 1, price: 0 }); draw(); onChange(total()); }));
+    $('#addLine', el).onclick = () => { rows.push({ name: '', qty: 1, price: 0 }); draw(); onChange(total()); $$('.iline [data-f=name]', el).at(-1).focus(); };
+  };
+  const total = () => L.round2(rows.reduce((s, l) => s + (l.name.trim() ? (l.qty || 0) * (l.price || 0) : 0), 0));
+  draw(); onChange(total());
+}
+const PER = { daily: [365, 'day'], weekly: [52, 'week'], monthly: [12, 'month'] };
+
 function renderSale(cid, aid) {
   if (needSeller()) return;
   const sid = S.sid, c = S.customers[cid], a = S.accounts[aid];
   if (!c || !a) return go('#/customers');
   setTitle(`${t('New sale')} · ${c.name}`, true);
-  const cart = []; // {stockId, name, qty, unitCost, price, max, category}
-  let cat = 'all', order = null, missing = [];
+  let order = null;
   try { const o = JSON.parse(sessionStorage.getItem('saleOrder') || 'null'); if (o && o.customerId === cid) order = o; } catch {}
-  if (order) {
-    for (const it of order.items) {
-      const lot = Object.values(S.stock).filter((x) => x.qty > 0 && x.name.trim().toLowerCase() === it.name.trim().toLowerCase()).sort((x, y) => y.qty - x.qty)[0];
-      if (!lot) { missing.push(`${it.name} × ${it.qty}`); continue; }
-      cart.push({ stockId: lot.id, name: lot.name, qty: Math.min(Number(it.qty) || 1, lot.qty), unitCost: lot.unitCost, price: lot.maxPrice, max: lot.qty, category: catOf(lot) });
-      if (lot.qty < it.qty) missing.push(`${it.name} × ${it.qty - lot.qty}`);
-    }
-  }
-  const drawStock = () => {
-    const qv = ($('#sq').value || '').toLowerCase();
-    $('#scat').innerHTML = catChips(Object.values(S.stock).filter((x) => x.qty > 0), cat);
-    $$('#scat [data-cat]').forEach((b) => (b.onclick = () => { cat = b.dataset.cat; drawStock(); }));
-    const items = Object.values(S.stock).filter((s) => s.qty > 0 && (cat === 'all' || catOf(s) === cat) && (!qv || s.name.toLowerCase().includes(qv))).sort((x, y) => x.name.localeCompare(y.name)).slice(0, 60);
-    $('#slist').innerHTML = items.map((s) => `<li><button type="button" class="row pick" data-add="${s.id}"><div><b>${esc(s.name)}</b><small>${t('In stock')}: ${s.qty}</small></div><div class="amt">${money(s.maxPrice)}</div></button></li>`).join('') || `<li class="muted">${t('No stock found')}</li>`;
-    $$('[data-add]').forEach((b) => (b.onclick = () => {
-      const s = S.stock[b.dataset.add];
-      const ex = cart.find((x) => x.stockId === s.id);
-      if (ex) { if (ex.qty < s.qty) ex.qty++; } else cart.push({ stockId: s.id, name: s.name, qty: 1, unitCost: s.unitCost, price: s.maxPrice, max: s.qty, category: catOf(s) });
-      drawCart();
-    }));
-  };
-  const drawCart = () => {
-    $('#cart').innerHTML = cart.map((l, i) => `<div class="cartline">
-      <div class="nm"><b>${esc(l.name)}</b><button type="button" class="x" data-rm="${i}">×</button></div>
-      <div class="two"><label>${t('Qty')}<input type="number" min="1" max="${l.max}" value="${l.qty}" data-q="${i}" inputmode="numeric"></label>
-      <label>${t('Price each')}<input type="number" step="any" value="${l.price}" data-p="${i}" inputmode="decimal"></label></div></div>`).join('') || `<p class="muted">${t('Tap items below to add them.')}</p>`;
-    $$('[data-rm]').forEach((b) => (b.onclick = () => { cart.splice(+b.dataset.rm, 1); drawCart(); }));
-    $$('[data-q]').forEach((inp) => (inp.oninput = () => { cart[+inp.dataset.q].qty = Math.max(1, Math.min(cart[+inp.dataset.q].max, Math.round(num(inp.value)))); total(); }));
-    $$('[data-p]').forEach((inp) => (inp.oninput = () => { cart[+inp.dataset.p].price = num(inp.value); total(); }));
-    total();
-  };
-  const total = () => { $('#total').textContent = money(L.saleTotals(cart).value); };
+  const rows = order ? order.items.map((i) => ({ name: i.name, qty: Number(i.qty) || 1, price: Number(lastPrice(i.name)) || 0 })) : [];
+  const [perN, perW] = PER[a.frequency] || PER.weekly;
   view.innerHTML = `
-    ${order ? `<div class="banner"><b>🚚 ${t('Delivering order')}</b><span class="small">${esc(order.items.map((i) => `${i.name} × ${i.qty}`).join(', '))}</span>
-      ${missing.length ? `<div class="warnline">${t('Not in stock')}: ${esc(missing.join(', '))}</div>` : ''}</div>` : ''}
-    <div class="card"><small class="muted">${esc(a.name)} · ${t('Balance')} ${money(a.balance)}</small>
-      <div id="cart"></div>
+    ${order ? `<div class="banner"><b>🚚 ${t('Delivering order')}</b><span class="small">${esc(order.items.map((i) => `${i.name} × ${i.qty}`).join(', '))}</span></div>` : ''}
+    <div class="card form"><small class="muted">${esc(a.name)} · ${t('Balance')} ${money(a.balance)}</small>
+      <div id="lines"></div>
       <div class="row total"><span>${t('Total')}</span><b id="total">₹0</b></div>
       <div class="two"><label>${t('Advance received')}<input id="adv" type="number" step="any" min="0" inputmode="decimal" placeholder="0"></label>
       <label>${t('Date')}<input id="sdate" type="date" value="${today()}" max="${today()}"></label></div>
       <label>${t('Advance paid by')}</label>${payPicker('advMode', L.preferredMode(c.modeCounts))}
-      <button class="btn primary" id="saveSale">${t('Save sale')}</button></div>
-    <h3>${t('Add items from stock')}</h3>
-    <div class="fchips" id="scat"></div>
-    <input id="sq" type="search" placeholder="${t('Search stock')}">
-    <ul class="list" id="slist"></ul>`;
-  $('#sq').oninput = drawStock;
-  drawStock(); drawCart();
+      <div class="calcbox" id="calc"></div>
+      <button class="btn primary" id="saveSale">${t('Save sale')}</button></div>`;
+  let tot = 0;
+  const calc = () => {
+    const adv = Math.min(num($('#adv').value), tot), rest = L.round2(tot - adv);
+    $('#total').textContent = money(tot);
+    $('#calc').innerHTML = tot ? `<div class="kv"><span>${t('Balance of this sale')}</span><b>${money(rest)}</b></div>
+      <div class="kv"><span>${t('New account balance')}</span><b>${money(L.round2(a.balance + rest))}</b></div>
+      ${rest > 0 ? `<div class="kv small"><span>${t('To finish in a year')}</span><span>${money(Math.ceil(rest / perN))} / ${t(perW)}</span></div>` : ''}` : '';
+  };
+  mountLines($('#lines'), rows, (v) => { tot = v; calc(); });
+  $('#adv').oninput = calc;
   $('#saveSale').onclick = () => {
-    if (!cart.length) return toast(t('Add at least one item'), true);
+    const lines = toSaleLines(rows);
+    if (!lines.length) return toast(t('Enter at least one item with quantity and price'), true);
+    if (rows.some((l) => l.name.trim() && !(l.price > 0))) return toast(t('Enter the price of every item'), true);
+    if (rows.some((l) => l.name.trim() && !(l.qty >= 1))) return toast(t('Enter the quantity of every item'), true);
     if ($('#saveSale').disabled) return;
     $('#saveSale').disabled = true;
-    const lines = cart.map((l) => ({ stockId: l.stockId, name: l.name, qty: l.qty, unitCost: l.unitCost, price: l.price, returned: 0, category: l.category || 'Others' }));
     const { value, cost } = L.saleTotals(lines);
     const adv = Math.min(num($('#adv').value), value);
     const date = $('#sdate').value || today();
     const b = F.writeBatch(F.db), scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now();
-    b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: lines, saleValue: value, cost, advance: adv, creditedValue: 0, creditedCost: 0, createdAt: now, by: S.user.uid });
-    lines.forEach((l, i) => { b.update(F.doc(F.db, 'stock', l.stockId), { qty: F.increment(-l.qty) }); logMove(b, `sale_${saleId}_${i}`, { name: l.name, type: 'sale', qty: l.qty, date, refId: saleId, sellerKey: sid }); });
+    b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: lines, saleValue: value, cost, advance: adv, creditedValue: 0, creditedCost: 0, costEstimated: true, createdAt: now, by: S.user.uid });
+    rememberItems(b, sid, lines);
     let queue = L.addSaleToQueue(a.queue || [], saleId, date, value, cost);
     if (adv > 0) {
       const r = L.allocate(queue, adv, saleId), advMode = pickedMode('advMode');
@@ -1568,8 +1563,8 @@ function cashReceiptText(sale, pays) {
 /** Write a cash sale (paid in full) into the batch. Returns the sale id. */
 function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone }) {
   const scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now();
-  b.set(F.doc(scol, saleId), { accountId: null, customerId: null, cash: true, buyerName: name || '', buyerPhone: phone || '', date, items: lines, saleValue: value, cost, advance: value, creditedValue: 0, creditedCost: 0, createdAt: now, by: S.user.uid });
-  lines.forEach((l, i) => { b.update(F.doc(F.db, 'stock', l.stockId), { qty: F.increment(-l.qty) }); logMove(b, `sale_${saleId}_${i}`, { name: l.name, type: 'sale', qty: l.qty, date, refId: saleId, sellerKey: sid }); });
+  b.set(F.doc(scol, saleId), { accountId: null, customerId: null, cash: true, buyerName: name || '', buyerPhone: phone || '', date, items: lines, saleValue: value, cost, advance: value, creditedValue: 0, creditedCost: 0, costEstimated: true, createdAt: now, by: S.user.uid });
+  rememberItems(b, sid, lines);
   const ccol = F.sellerCol(sid, 'collections');
   L.cashPayments(value, cost, pays).forEach((p, k) => {
     const id = F.newId(ccol);
@@ -1590,8 +1585,8 @@ function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone }) 
 function applyPendingSale(b, sid, cid, aid, acc, pend, custName) {
   const scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now(), date = pend.date || today();
   const pays = pend.pays.filter((p) => p.amount > 0), paid = L.round2(pays.reduce((s, p) => s + p.amount, 0));
-  b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: pend.lines, saleValue: pend.value, cost: pend.cost, advance: paid, creditedValue: 0, creditedCost: 0, fromCashSale: true, createdAt: now, by: S.user.uid });
-  pend.lines.forEach((l, i) => { b.update(F.doc(F.db, 'stock', l.stockId), { qty: F.increment(-l.qty) }); logMove(b, `sale_${saleId}_${i}`, { name: l.name, type: 'sale', qty: l.qty, date, refId: saleId, sellerKey: sid }); });
+  b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: pend.lines, saleValue: pend.value, cost: pend.cost, advance: paid, creditedValue: 0, creditedCost: 0, fromCashSale: true, costEstimated: true, createdAt: now, by: S.user.uid });
+  rememberItems(b, sid, pend.lines);
   let queue = L.addSaleToQueue(acc.queue || [], saleId, date, pend.value, pend.cost);
   const ccol = F.sellerCol(sid, 'collections');
   pays.forEach((p, k) => {
@@ -1613,11 +1608,11 @@ function renderCashSale() {
   const sid = S.sid;
   setTitle(t('Cash sale'), true);
   try { sessionStorage.removeItem('pendingCash'); } catch {} // a part-paid cart left behind is dropped
-  const cart = [];
-  let cat = 'all', cashTouched = false;
+  const rows = [];
+  let cashTouched = false, tot = 0;
   view.innerHTML = `
     <div class="card form" id="csf">
-      <div id="cart"></div>
+      <div id="lines"></div>
       <div class="row total"><span>${t('Total')}</span><b id="total">₹0</b></div>
       <div class="two"><label>${t('Name (optional)')}<input id="bname" autocomplete="off"></label>
         <label>${t('Phone (optional)')}<input id="bphone" type="tel" inputmode="tel" autocomplete="off"></label></div>
@@ -1629,12 +1624,8 @@ function renderCashSale() {
         <div id="slines">${scrapLineHtml()}</div><button type="button" class="btn ghost small" id="addS">+ ${t('Another type')}</button></details>
       <div id="payInfo" class="small"></div>
       <label>${t('Date')}<input id="sdate" type="date" value="${today()}" max="${today()}"></label>
-      <button class="btn primary" id="saveCash">${t('Save cash sale')}</button></div>
-    <h3>${t('Add items from stock')}</h3>
-    <div class="fchips" id="scat"></div>
-    <input id="sq" type="search" placeholder="${t('Search stock')}">
-    <ul class="list" id="slist"></ul>`;
-  const value = () => L.saleTotals(cart).value;
+      <button class="btn primary" id="saveCash">${t('Save cash sale')}</button></div>`;
+  const value = () => tot;
   const scrapItems = () => $$('#slines .scrapline').map((r) => ({ type: $('[name=st]', r).value, value: L.round2(num($('[name=sv]', r).value)) })).filter((x) => x.value > 0);
   const scrapTotal = () => L.round2(scrapItems().reduce((s, x) => s + x.value, 0));
   const pays = () => [{ mode: 'cash', amount: L.round2(num($('#pcash').value)) }, { mode: 'upi', amount: L.round2(num($('#pupi').value)) }, { mode: 'scrap', amount: scrapTotal(), scrapItems: scrapItems() }];
@@ -1645,38 +1636,18 @@ function renderCashSale() {
       : bal > 0 ? `<span class="warnline">${t('Paid')} ${money(p)} · ${t('Balance')} ${money(bal)} — ${t('a balance needs a customer account')}</span>` : `✓ ${t('Paid in full')}`;
   };
   const refill = () => { if (!cashTouched) $('#pcash').value = Math.max(0, L.round2(value() - num($('#pupi').value) - scrapTotal())) || ''; info(); };
-  const drawStock = () => {
-    const qv = ($('#sq').value || '').toLowerCase();
-    $('#scat').innerHTML = catChips(Object.values(S.stock).filter((x) => x.qty > 0), cat);
-    $$('#scat [data-cat]').forEach((b) => (b.onclick = () => { cat = b.dataset.cat; drawStock(); }));
-    const items = Object.values(S.stock).filter((s) => s.qty > 0 && (cat === 'all' || catOf(s) === cat) && (!qv || s.name.toLowerCase().includes(qv))).sort((x, y) => x.name.localeCompare(y.name)).slice(0, 60);
-    $('#slist').innerHTML = items.map((s) => `<li><button type="button" class="row pick" data-add="${s.id}"><div><b>${esc(s.name)}</b><small>${t('In stock')}: ${s.qty}</small></div><div class="amt">${money(s.maxPrice)}</div></button></li>`).join('') || `<li class="muted">${t('No stock found')}</li>`;
-    $$('[data-add]').forEach((b) => (b.onclick = () => {
-      const s = S.stock[b.dataset.add], ex = cart.find((x) => x.stockId === s.id);
-      if (ex) { if (ex.qty < s.qty) ex.qty++; } else cart.push({ stockId: s.id, name: s.name, qty: 1, unitCost: s.unitCost, price: s.maxPrice, max: s.qty, category: catOf(s) });
-      drawCart();
-    }));
-  };
-  const drawCart = () => {
-    $('#cart').innerHTML = cart.map((l, i) => `<div class="cartline">
-      <div class="nm"><b>${esc(l.name)}</b><button type="button" class="x" data-rm="${i}">×</button></div>
-      <div class="two"><label>${t('Qty')}<input type="number" min="1" max="${l.max}" value="${l.qty}" data-q="${i}" inputmode="numeric"></label>
-      <label>${t('Price each')}<input type="number" step="any" value="${l.price}" data-p="${i}" inputmode="decimal"></label></div></div>`).join('') || `<p class="muted">${t('Tap items below to add them.')}</p>`;
-    $$('[data-rm]').forEach((b) => (b.onclick = () => { cart.splice(+b.dataset.rm, 1); drawCart(); }));
-    $$('[data-q]').forEach((inp) => (inp.oninput = () => { cart[+inp.dataset.q].qty = Math.max(1, Math.min(cart[+inp.dataset.q].max, Math.round(num(inp.value)))); total(); }));
-    $$('[data-p]').forEach((inp) => (inp.oninput = () => { cart[+inp.dataset.p].price = num(inp.value); total(); }));
-    total();
-  };
   const total = () => { $('#total').textContent = money(value()); refill(); };
   const bindS = () => { $$('#slines [name=sv]').forEach((i) => (i.oninput = refill)); $$('#slines [data-srm]').forEach((b) => (b.onclick = () => { if ($$('#slines .scrapline').length > 1) b.parentElement.remove(); refill(); })); };
   $('#addS').onclick = () => { $('#slines').insertAdjacentHTML('beforeend', scrapLineHtml()); bindS(); };
   $('#pcash').oninput = () => { cashTouched = true; info(); };
   $('#pupi').oninput = refill;
-  $('#sq').oninput = drawStock;
-  bindS(); drawStock(); drawCart();
+  bindS();
+  mountLines($('#lines'), rows, (v) => { tot = v; total(); });
   $('#saveCash').onclick = () => {
-    if (!cart.length) return toast(t('Add at least one item'), true);
-    const lines = cart.map((l) => ({ stockId: l.stockId, name: l.name, qty: l.qty, unitCost: l.unitCost, price: l.price, returned: 0, category: l.category || 'Others' }));
+    const lines = toSaleLines(rows);
+    if (!lines.length) return toast(t('Enter at least one item with quantity and price'), true);
+    if (rows.some((l) => l.name.trim() && !(l.price > 0))) return toast(t('Enter the price of every item'), true);
+    if (rows.some((l) => l.name.trim() && !(l.qty >= 1))) return toast(t('Enter the quantity of every item'), true);
     const { value: v, cost } = L.saleTotals(lines), p = pays(), paid = paidNow(), date = $('#sdate').value || today();
     const name = $('#bname').value.trim(), phone = $('#bphone').value.trim();
     if (paid > v + 0.005) return toast(t('Paid is more than the total'), true);
@@ -1730,21 +1701,15 @@ async function renderCashSales() {
   await draw();
 }
 
-/** Admin: cancel a cash sale entered by mistake (no returns). Items go back to stock, payments are removed. */
+/** Admin: cancel a cash sale entered by mistake (no returns). Its payments are removed. */
 async function voidCashSale(sid, s, pays) {
   if (!isAdmin() || !s) return false;
   if (s.items.some((i) => i.returned)) { toast(t('This sale has a return. It cannot be voided — use Return instead.'), true); return false; }
-  if (!confirm(`${t('Void this cash sale?')}\n${fmtDate(s.date)} · ${cashItems(s)} · ${money(s.saleValue)}\n${t('Items go back to stock.')}`)) return false;
+  if (!confirm(`${t('Void this cash sale?')}\n${fmtDate(s.date)} · ${cashItems(s)} · ${money(s.saleValue)}`)) return false;
   const all = await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('saleId', '==', s.id)));
   const b = F.writeBatch(F.db);
   b.delete(F.sellerDoc(sid, 'sales', s.id));
   [...new Map([...pays, ...all].map((c) => [c.id, c])).values()].forEach((c) => { b.delete(F.sellerDoc(sid, 'collections', c.id)); if (c.mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', c.id)); });
-  s.items.forEach((i, k) => {
-    b.delete(F.doc(F.db, 'stockMoves', `sale_${s.id}_${k}`));
-    const left = i.qty - (i.returned || 0); if (left <= 0) return;
-    if (S.stock[i.stockId]) b.update(F.doc(F.db, 'stock', i.stockId), { qty: F.increment(left) });
-    else { const sc = F.collection(F.db, 'stock'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: left, unitCost: i.unitCost, maxPrice: L.maxPrice(i.unitCost, S.settings.defaultMarginPct), category: i.category || 'Others', addedBy: S.user.uid, createdAt: Date.now() }); }
-  });
   F.audit(b, S.user.uid, 'cash-sale-void', `sellers/${sid}/sales/${s.id}`, s, null);
   F.commit(b, onWriteError); toast(t('Voided'));
   return true;
@@ -1762,7 +1727,7 @@ async function renderCashReturn(saleId) {
     <div class="small muted">${fmtDate(s.date)} · ${esc(s.buyerName || t('Walk-in buyer'))}</div>
     <div id="ritems">${s.items.map((i, k) => { const left = i.qty - (i.returned || 0); return left > 0 ? `<label>${esc(i.name)} <small class="muted">(${t('max')} ${left} · ${money(i.price)})</small><input type="number" min="0" max="${left}" value="0" data-ri="${k}" inputmode="numeric"></label>` : ''; }).join('')}</div>
     <fieldset><legend>${t('Condition')}</legend>
-      <label class="opt"><input type="radio" name="cond" value="stock" checked><span>${t('Good')}<small>${t('Goes back to stock')}</small></span></label>
+      <label class="opt"><input type="radio" name="cond" value="stock" checked><span>${t('Good')}<small>${t('Taken back in good condition')}</small></span></label>
       <label class="opt"><input type="radio" name="cond" value="complaint"><span>${t('Complaint')}<small>${t('Repair it or send it back to the supplier')}</small></span></label>
       <label class="opt"><input type="radio" name="cond" value="scrap"><span>${t('Damage')}<small>${t('Cannot be repaired; written off as a loss')}</small></span></label></fieldset>
     <label>${t('Money given back by')}</label>${payPicker('rmode', 'cash')}
@@ -1778,7 +1743,7 @@ async function renderCashReturn(saleId) {
     const p = picked(); if (!p.length) return toast(t('Enter quantity to return'), true);
     const sb = $('button[type=submit]', f); if (sb.disabled) return; sb.disabled = true;
     const cond = f.cond.value, date = f.date.value || today(), mode = pickedMode('rmode', f), now = Date.now();
-    const items = p.map((x) => ({ stockId: s.items[x.k].stockId, name: s.items[x.k].name, qty: x.qty, price: s.items[x.k].price, unitCost: s.items[x.k].unitCost, category: lineCat(s.items[x.k]) }));
+    const items = p.map((x) => ({ name: s.items[x.k].name, qty: x.qty, price: s.items[x.k].price, unitCost: s.items[x.k].unitCost }));
     const amount = L.round2(items.reduce((t2, i) => t2 + i.price * i.qty, 0)), cost = L.round2(items.reduce((t2, i) => t2 + i.unitCost * i.qty, 0));
     const b = F.writeBatch(F.db), rcol = F.sellerCol(sid, 'returns'), rid = F.newId(rcol);
     b.set(F.doc(rcol, rid), { saleId: s.id, accountId: null, customerId: null, cash: true, date, items, condition: cond, credited: true, amount, cost, refundMode: mode, createdAt: now, by: S.user.uid });
@@ -1786,12 +1751,7 @@ async function renderCashReturn(saleId) {
       creditedValue: L.round2((s.creditedValue || 0) + amount), creditedCost: L.round2((s.creditedCost || 0) + cost) });
     const rf = L.cashRefund(amount, cost, mode), ccol = F.sellerCol(sid, 'collections');
     b.set(F.doc(ccol, F.newId(ccol)), { accountId: null, customerId: null, cash: true, buyerName: s.buyerName || '', date, kind: 'refund', saleId: s.id, returnId: rid, mode, amount: rf.amount, profit: rf.profit, allocations: [], note: t('Refund'), createdAt: now, by: S.user.uid });
-    items.forEach((i, k) => {
-      logMove(b, `ret_${rid}_${k}`, { name: i.name, type: cond === 'stock' ? 'return' : cond === 'complaint' ? 'complaint' : 'damage', qty: i.qty, date, refId: s.id, sellerKey: sid });
-      if (cond === 'stock') {
-        if (S.stock[i.stockId]) b.update(F.doc(F.db, 'stock', i.stockId), { qty: F.increment(i.qty) });
-        else { const sc = F.collection(F.db, 'stock'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: i.qty, unitCost: i.unitCost, maxPrice: L.maxPrice(i.unitCost, S.settings.defaultMarginPct), category: i.category || 'Others', addedBy: S.user.uid, createdAt: now }); }
-      }
+    items.forEach((i) => {
       if (cond === 'complaint') { const cc = F.collection(F.db, 'complaints'); b.set(F.doc(cc, F.newId(cc)), { ...i, sellerId: sid, returnId: rid, customerName: s.buyerName || t('Cash sale'), credited: true, status: 'open', date, createdAt: now }); }
       if (cond === 'scrap') { const sc = F.collection(F.db, 'scrapLosses'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: i.qty, amount: L.round2(i.unitCost * i.qty), sellerId: sid, returnId: rid, date, createdAt: now }); }
     });
@@ -1814,7 +1774,7 @@ async function renderReturn(cid, aid) {
     <label>${t('Sale')}<select name="sale">${sales.map((s) => `<option value="${s.id}">${fmtDate(s.date)} · ${esc(s.items.map((i) => i.name).join(', ')).slice(0, 60)}</option>`).join('')}</select></label>
     <div id="ritems"></div>
     <fieldset><legend>${t('Condition')}</legend>
-      <label class="opt"><input type="radio" name="cond" value="stock" checked><span>${t('Good')}<small>${t('Goes back to stock')}</small></span></label>
+      <label class="opt"><input type="radio" name="cond" value="stock" checked><span>${t('Good')}<small>${t('Taken back in good condition')}</small></span></label>
       <label class="opt"><input type="radio" name="cond" value="complaint"><span>${t('Complaint')}<small>${t('Repair it or send it back to the supplier')}</small></span></label>
       <label class="opt"><input type="radio" name="cond" value="scrap"><span>${t('Damage')}<small>${t('Cannot be repaired; written off as a loss')}</small></span></label></fieldset>
     <label class="radio"><input type="checkbox" name="credit" checked> ${t('Reduce amount from customer balance')}</label>
@@ -1842,7 +1802,7 @@ async function renderReturn(cid, aid) {
     if (!p.length) return toast(t('Enter quantity to return'), true);
     const sb = $('button[type=submit]', f); if (sb.disabled) return; sb.disabled = true;
     const cond = f.cond.value, credited = f.credit.checked, date = f.date.value || today();
-    const items = p.map((x) => ({ stockId: s.items[x.k].stockId, name: s.items[x.k].name, qty: x.qty, price: s.items[x.k].price, unitCost: s.items[x.k].unitCost, category: lineCat(s.items[x.k]) }));
+    const items = p.map((x) => ({ name: s.items[x.k].name, qty: x.qty, price: s.items[x.k].price, unitCost: s.items[x.k].unitCost }));
     const amount = L.round2(items.reduce((t2, i) => t2 + i.price * i.qty, 0));
     const cost = L.round2(items.reduce((t2, i) => t2 + i.unitCost * i.qty, 0));
     const b = F.writeBatch(F.db), rcol = F.sellerCol(sid, 'returns'), rid = F.newId(rcol), now = Date.now();
@@ -1856,12 +1816,7 @@ async function renderReturn(cid, aid) {
       b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-amount) });
     }
     b.update(F.sellerDoc(sid, 'sales', s.id), saleUpd);
-    items.forEach((i, k) => {
-      logMove(b, `ret_${rid}_${k}`, { name: i.name, type: cond === 'stock' ? 'return' : cond === 'complaint' ? 'complaint' : 'damage', qty: i.qty, date, refId: s.id, sellerKey: sid });
-      if (cond === 'stock') {
-        if (S.stock[i.stockId]) b.update(F.doc(F.db, 'stock', i.stockId), { qty: F.increment(i.qty) });
-        else { const sc = F.collection(F.db, 'stock'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: i.qty, unitCost: i.unitCost, maxPrice: L.maxPrice(i.unitCost, S.settings.defaultMarginPct), category: i.category || 'Others', addedBy: S.user.uid, createdAt: now }); }
-      }
+    items.forEach((i) => {
       if (cond === 'complaint') { const cc = F.collection(F.db, 'complaints'); b.set(F.doc(cc, F.newId(cc)), { ...i, sellerId: sid, returnId: rid, customerName: c.name, credited, status: 'open', date, createdAt: now }); }
       if (cond === 'scrap' && credited) { const sc = F.collection(F.db, 'scrapLosses'); b.set(F.doc(sc, F.newId(sc)), { name: i.name, qty: i.qty, amount: L.round2(i.unitCost * i.qty), sellerId: sid, returnId: rid, date, createdAt: now }); }
     });
@@ -1870,56 +1825,6 @@ async function renderReturn(cid, aid) {
     toast(t('Return saved'));
     go(`#/account/${cid}/${aid}`);
   };
-}
-
-// ---------- stock movement log (shared, no prices of sales, no customer names) ----------
-/** Add one movement line: type in | sale | return | complaint | damage | adjust. Ids are fixed so the backfill and live writes never double up. */
-function logMove(b, id, m) {
-  const sk = m.sellerKey || S.sid || 'admin';
-  b.set(F.doc(F.db, 'stockMoves', id), { name: m.name, nameKey: L.nameKey(m.name), type: m.type, qty: Number(m.qty) || 0, date: m.date || today(),
-    sellerKey: sk, sellerName: sk === 'admin' ? 'Admin' : sellerName(sk), refId: m.refId || '', cost: m.cost ?? null, supplier: m.supplier || '', billName: m.billName || '', createdAt: Date.now() });
-}
-
-// ---------- stock ----------
-/** Category filter chips with item count and stock value at cost. */
-function catChips(items, sel, extra = '') {
-  const val = (arr) => money(Math.round(arr.reduce((s, i) => s + Math.max(0, i.qty) * (i.unitCost || 0), 0)));
-  const chip = (k, l, arr) => `<button class="fchip ${k === sel ? 'on' : ''}" data-cat="${esc(k)}">${esc(l)} <small>${arr.length} · ${val(arr)}</small></button>`;
-  return chip('all', t('All'), items) + categories().map((c) => [c, items.filter((i) => catOf(i) === c)]).filter(([, arr]) => arr.length).map(([c, arr]) => chip(c, t(c), arr)).join('') + extra;
-}
-
-function renderStock() {
-  setTitle(t('Stock'));
-  let cat = (() => { try { return sessionStorage.getItem('stockCat') || 'all'; } catch { return 'all'; } })(), shopOnly = false;
-  const inShop = (x) => !!S.catalog[L.nameKey(x.name)]?.show;
-  const draw = () => {
-    const qv = ($('#q')?.value || '').toLowerCase(), all = $('#all')?.checked;
-    const base = Object.values(S.stock).filter((s) => (all || s.qty !== 0) && (!qv || s.name.toLowerCase().includes(qv)));
-    if (cat !== 'all' && !categories().includes(cat)) cat = 'all';
-    $('#scat').innerHTML = catChips(base, cat, `<button class="fchip ${shopOnly ? 'on' : ''}" data-shop>🛍️ ${t('In catalog')} <small>${base.filter(inShop).length}</small></button>`);
-    $$('#scat [data-cat]').forEach((b) => (b.onclick = () => { cat = b.dataset.cat; try { sessionStorage.setItem('stockCat', cat); } catch {} draw(); }));
-    $('#scat [data-shop]').onclick = () => { shopOnly = !shopOnly; draw(); };
-    const items = base.filter((s) => (cat === 'all' || catOf(s) === cat) && (!shopOnly || inShop(s))).sort((x, y) => x.name.localeCompare(y.name));
-    const val = items.reduce((s, i) => s + Math.max(0, i.qty) * i.unitCost, 0);
-    $('#sum').textContent = `${items.length} ${t('items')} · ${t('Stock value (cost)')} ${money(val)}`;
-    $('#list').innerHTML = items.map((s) => `<li><a class="row" href="#/item/${L.nameKey(s.name)}">
-      <div><b>${esc(s.name)}${inShop(s) ? ' <span title="' + t('In catalog') + '">🛍️</span>' : ''}</b><small>${esc(t(catOf(s)))} · ${t('Cost')} ${money(s.unitCost)} · ${t('Price')} ${money(s.maxPrice)}</small></div>
-      <div class="amt ${s.qty < 0 ? 'neg' : ''}">${s.qty}${s.qty < 0 ? ' ⚠' : ''}</div></a></li>`).join('') || `<li class="muted">${t('No stock yet')}</li>`;
-  };
-  const nComp = Object.keys(S.complaints).length;
-  view.innerHTML = `
-    <div class="grid2"><a class="tile primary" href="#/purchase/photo">📷 ${t('From bill photo')}</a><a class="tile" href="#/purchase">+ ${t('Add manually')}</a></div>
-    <div class="contact" style="margin-top:0">
-      ${nComp ? `<a class="btn small" href="#/complaints">${t('Complaint items')} (${nComp})</a>` : ''}
-      <a class="btn small" href="#/orders">🚚 ${t('To buy')}</a>
-      ${isAdmin() ? `<a class="btn small" href="#/categories">${t('Categories')}</a>` : ''}
-      <a class="btn small" href="#/shop-link">🛍️ ${t('Shop link')}</a></div>
-    <div class="fchips" id="scat" style="margin-top:10px"></div>
-    <div class="toolbar"><input id="q" type="search" placeholder="${t('Search stock')}"><label class="radio small"><input type="checkbox" id="all"> ${t('Show sold out')}</label></div>
-    <div class="muted small" id="sum"></div><ul class="list" id="list"></ul>`;
-  $('#q').oninput = draw; $('#all').onchange = draw;
-  draw();
-  S.refresh = draw;
 }
 
 async function compressImage(file, maxSide = 1280, maxLen = 700000) {
@@ -1933,321 +1838,23 @@ async function compressImage(file, maxSide = 1280, maxLen = 700000) {
   return data;
 }
 
-const RETIRED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
-
-/** Pick the newest Flash model this key can use (used when the saved model is retired). */
-async function pickModel(key, lite = false) {
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
-  if (!r.ok) return null;
-  const names = ((await r.json()).models || [])
-    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-    .map((m) => m.name.replace('models/', ''))
-    .filter((n) => (lite ? /^gemini-[\d.]+-flash-lite$/ : /^gemini-[\d.]+-flash$/).test(n));
-  names.sort((x, y) => parseFloat(y.split('-')[1]) - parseFloat(x.split('-')[1]));
-  return names[0] || null;
-}
-
-/** POST to Gemini generateContent with the saved key and model; falls back to a newer Flash model on 404. */
-async function gemini(body) {
-  const key = S.settings.geminiKey;
-  if (!key) throw new Error(t('AI key not set. Admin → App settings.'));
-  let model = S.settings.geminiModel;
-  if (!model || RETIRED_MODELS.includes(model)) model = DEFAULT_MODEL;
-  const call = (m) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify(body),
-  });
-  const remember = (m) => { S.settings.geminiModel = m; if (isAdmin()) { const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'settings', 'main'), { geminiModel: m }, { merge: true }); F.commit(b, () => {}); } };
-  let res = await call(model);
-  if (res.status === 404) {
-    const alt = await pickModel(key);
-    if (alt && alt !== model) { res = await call(alt); if (res.ok) remember(alt); }
-  }
-  // Free-tier limit hit on this model: try the lighter models, which usually have higher free limits.
-  if (res.status === 429) {
-    const lite = await pickModel(key, true);
-    for (const m of [...new Set(['gemini-flash-lite-latest', lite].filter((x) => x && x !== model))]) {
-      res = await call(m);
-      if (res.ok) { remember(m); break; }
-      if (res.status !== 429 && res.status !== 404) break;
-    }
-  }
-  if (res.status === 429) throw new Error(t('The free AI limit is used up for now. Wait a minute and try again; if it keeps happening, today\'s free limit is over.'));
-  if (!res.ok) throw new Error(`AI ${res.status}: ${(await res.text()).replace(/\s+/g, ' ').slice(0, 300)}`);
-  return res.json();
-}
-
-async function readBill(dataUrl) {
-  const prompt = 'Read this purchase bill. It may be printed or handwritten, in English or Malayalam. ' +
-    'Return only JSON: {"supplier": string, "date": "YYYY-MM-DD" or "", "items": [{"name": string, "qty": number, "unitCost": number}]}. ' +
-    'unitCost is the price of ONE unit; if only a line total is shown, divide it by qty. Write each item name exactly as printed on the bill. ' +
-    `Also give each item a "category", exactly one of: ${JSON.stringify(categories())} (use "Others" if unsure). ` +
-    'Do not include totals, taxes, discounts or round-off as items.';
-  const j = await gemini({
-    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'image/jpeg', data: dataUrl.split(',')[1] } }] }],
-    generationConfig: { responseMimeType: 'application/json', temperature: 0 },
-  });
-  const txt = j.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '{}';
-  return JSON.parse(txt.replace(/^```(json)?|```$/g, '').trim());
-}
-
-function renderPurchase(mode) {
-  setTitle(mode ? t('Stock from bill') : t('Add stock'), '#/stock');
-  let photo = null;
-  const m = S.settings.defaultMarginPct;
-  const catSel = (sel) => `<select name="cat" aria-label="${t('Category')}">${categories().map((c) => `<option value="${esc(c)}" ${c === sel ? 'selected' : ''}>${esc(t(c))}</option>`).join('')}</select>`;
-  let lastCat = 'Others';
-  // A bill line keeps the supplier's name (billName); "our name" is filled from what was learned before.
-  const lineHtml = (l = {}) => {
-    const learned = l.billName ? S.nameMap[L.nameKey(l.billName)] : null;
-    const name = learned ? learned.ourName : l.name || '';
-    const cat = learned?.category || l.category;
-    return `<div class="pline" data-bill="${esc(l.billName || '')}">
-    ${l.billName ? `<div class="billname">🧾 ${esc(l.billName)}${learned ? ` <span class="pill ok">${t('remembered')}</span>` : ''}</div>` : ''}
-    <input name="n" placeholder="${t('Our item name')}" value="${esc(name)}" list="snames">
-    <input name="q" type="number" min="1" placeholder="${t('Qty')}" value="${l.qty || ''}" inputmode="numeric">
-    <input name="c" type="number" step="any" min="0" placeholder="${t('Cost each')}" value="${l.unitCost || ''}" inputmode="decimal">
-    <span class="mp"></span><button type="button" class="x" data-rm>×</button>
-    ${catSel(categories().includes(cat) ? cat : lastCat)}</div>`;
-  };
-  view.innerHTML = `
-    ${mode ? `<div class="card"><div class="grid2" style="margin:0"><label class="btn primary">📷 ${t('Take photo')}<input id="ph" type="file" accept="image/*" capture="environment" hidden></label>
-      <label class="btn">🖼️ ${t('From gallery')}<input id="phg" type="file" accept="image/*" hidden></label></div>
-      <img id="prev" class="billprev" hidden><div id="aiStat" class="muted small"></div></div>` : ''}
-    <form id="pf" class="card form">
-      <div class="two"><label>${t('Supplier')}<input name="sup"></label><label>${t('Bill date')}<input name="date" type="date" value="${today()}"></label></div>
-      <div class="muted small">${t('Selling price = cost')} + ${m}%</div>
-      <div class="phead"><span>${t('Item name')}</span><span>${t('Qty')}</span><span>${t('Cost each')}</span><span>${t('Price')}</span><span></span></div>
-      <div id="lines">${lineHtml()}</div>
-      <datalist id="snames">${[...new Set(Object.values(S.stock).map((x) => x.name))].sort().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
-      <button type="button" class="btn ghost" id="addLine">+ ${t('Add row')}</button>
-      <div class="row total"><span>${t('Bill total')}</span><b id="btot">₹0</b></div>
-      <button class="btn primary" type="submit">${t('Save to stock')}</button></form>`;
-  const recalc = () => {
-    let tot = 0;
-    $$('.pline').forEach((r) => {
-      const q = num($('[name=q]', r).value), c = num($('[name=c]', r).value);
-      tot += q * c;
-      $('.mp', r).textContent = c ? money(L.maxPrice(c, m)) : '';
-    });
-    $('#btot').textContent = money(tot);
-  };
-  const bindLines = () => {
-    $$('.pline input').forEach((i) => (i.oninput = recalc)); $$('[data-rm]').forEach((b) => (b.onclick = () => { b.parentElement.remove(); recalc(); }));
-    $$('.pline select').forEach((sl) => (sl.onchange = () => { lastCat = sl.value; }));
-    // Typing a name already in stock picks that item's category.
-    $$('.pline [name=n]').forEach((i) => i.addEventListener('change', () => { const ex = Object.values(S.stock).find((x) => x.name.toLowerCase() === i.value.trim().toLowerCase()); if (ex) $('select', i.parentElement).value = catOf(ex); }));
-    recalc();
-  };
-  $('#addLine').onclick = () => { $('#lines').insertAdjacentHTML('beforeend', lineHtml()); bindLines(); };
-  bindLines();
-  if (mode) {
-    $('#phg').onchange = (e) => $('#ph').onchange(e);
-    $('#ph').onchange = async (e) => {
-      const file = e.target.files[0]; if (!file) return;
-      photo = await compressImage(file);
-      $('#prev').src = photo; $('#prev').hidden = false;
-      $('#aiStat').textContent = t('Reading bill…');
-      try {
-        const r = await readBill(photo);
-        const f = $('#pf');
-        if (r.supplier) f.sup.value = r.supplier;
-        if (/^\d{4}-\d{2}-\d{2}$/.test(r.date || '')) f.date.value = r.date;
-        if (Array.isArray(r.items) && r.items.length) { $('#lines').innerHTML = r.items.map((it) => lineHtml({ ...it, billName: it.name })).join(''); bindLines(); }
-        $('#aiStat').textContent = `${(r.items || []).length} ${t('items read. Check every row before saving.')}`;
-      } catch (err) {
-        $('#aiStat').textContent = t('Could not read the bill. Enter items by hand.') + ' (' + err.message + ')';
-      }
-    };
-  }
-  $('#pf').onsubmit = (e) => {
-    e.preventDefault();
-    const f = e.target;
-    const lines = $$('.pline').map((r) => ({ name: $('[name=n]', r).value.trim(), billName: r.dataset.bill || '', qty: Math.round(num($('[name=q]', r).value)), unitCost: num($('[name=c]', r).value), category: $('[name=cat]', r).value })).filter((l) => l.name && l.qty > 0);
-    if (!lines.length) return toast(t('Add at least one item'), true);
-    const b = F.writeBatch(F.db), pcol = F.collection(F.db, 'purchases'), pid = F.newId(pcol), now = Date.now();
-    const total = L.round2(lines.reduce((s, l) => s + l.qty * l.unitCost, 0));
-    b.set(F.doc(pcol, pid), { date: f.date.value || today(), supplier: f.sup.value.trim(), lines, total, hasPhoto: !!photo, addedBy: S.user.uid, createdAt: now });
-    if (photo) b.set(F.doc(F.db, 'billPhotos', pid), { data: photo, createdAt: now });
-    // Remember bill name -> our name (shared by everyone) when it is new or changed.
-    lines.filter((l) => l.billName).forEach((l) => {
-      const k = L.nameKey(l.billName), old = S.nameMap[k];
-      if (!old || old.ourName !== l.name || old.category !== l.category) {
-        const doc = { billName: l.billName, ourName: l.name, category: l.category, by: S.user.uid, updatedAt: now };
-        b.set(F.doc(F.db, 'nameMap', k), doc); S.nameMap[k] = { id: k, ...doc };
-      }
-    });
-    lines.forEach((l, i) => {
-      const scol = F.collection(F.db, 'stock');
-      b.set(F.doc(scol, F.newId(scol)), { name: l.name, qty: l.qty, unitCost: l.unitCost, maxPrice: L.maxPrice(l.unitCost, m), category: l.category, purchaseId: pid, addedBy: S.user.uid, createdAt: now });
-      logMove(b, `pur_${pid}_${i}`, { name: l.name, type: 'in', qty: l.qty, date: f.date.value || today(), refId: pid, cost: l.unitCost, supplier: f.sup.value.trim(), billName: l.billName || '', sellerKey: isAdmin() ? 'admin' : S.sid });
-    });
-    F.commit(b, onWriteError);
-    toast(`${lines.length} ${t('items added to stock')}`);
-    go('#/stock');
-  };
-}
-
-// ---------- item page: details and history of one item (all stock lots with the same name) ----------
-async function renderItem(key) {
-  const lots = Object.values(S.stock).filter((x) => L.nameKey(x.name) === key).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  setTitle(lots[0]?.name || S.catalog[key]?.name || t('Item'), '#/stock');
-  view.innerHTML = '<div class="loading">…</div>';
-  const moves = (await F.fetchAll(F.query(F.collection(F.db, 'stockMoves'), F.where('nameKey', '==', key))))
-    .sort((a, b) => (a.date === b.date ? (b.createdAt || 0) - (a.createdAt || 0) : a.date < b.date ? 1 : -1));
-  const name = lots[0]?.name || moves[0]?.name || S.catalog[key]?.name || '';
-  if (!name) { view.innerHTML = `<div class="empty">${t('Item not found')}</div>`; return; }
-  setTitle(name, '#/stock');
-  const sum = (type) => moves.filter((m) => m.type === type).reduce((s2, m) => s2 + m.qty, 0);
-  const ins = moves.filter((m) => m.type === 'in'), outs = moves.filter((m) => m.type === 'sale');
-  const backs = moves.filter((m) => ['return', 'complaint', 'damage', 'adjust'].includes(m.type));
-  const inStock = lots.reduce((s2, x) => s2 + Math.max(0, x.qty), 0);
-  const live = lots.filter((x) => x.qty > 0), maxP = Math.max(0, ...(live.length ? live : lots).map((x) => x.maxPrice || 0));
-  const lastIn = ins[0]?.date || '', soldSince = lastIn ? outs.filter((m) => m.date >= lastIn).reduce((s2, m) => s2 + m.qty, 0) : 0;
-  // Price and customer only for own sales (admin: all). Others' sales show date, seller and quantity.
-  const mine = (m) => isAdmin() || m.sellerKey === S.sid;
-  const det = {}, custCache = {};
-  await Promise.all(outs.filter(mine).slice(0, 40).map(async (m) => {
-    try {
-      const sd = await F.getDoc(F.sellerDoc(m.sellerKey, 'sales', m.refId)); if (!sd.exists()) return;
-      const sale = sd.data(), line = (sale.items || []).find((i) => L.nameKey(i.name) === key);
-      let cust = sale.cash ? { name: '🛒 ' + (sale.buyerName || t('Cash sale')) } : m.sellerKey === S.sid ? S.customers[sale.customerId] : null;
-      if (!cust) { const ck = `${m.sellerKey}/${sale.customerId}`; custCache[ck] ||= F.getDoc(F.sellerDoc(m.sellerKey, 'customers', sale.customerId)).then((d) => (d.exists() ? d.data() : null)).catch(() => null); cust = await custCache[ck]; }
-      det[m.id] = { price: line?.price, customer: cust?.name || '', cid: sale.cash ? null : sale.customerId, book: m.sellerKey };
-    } catch {}
-  }));
-  const priced = Object.values(det).filter((d) => d.price != null);
-  const avg = priced.length ? priced.reduce((s2, d) => s2 + d.price, 0) / priced.length : 0;
-  const cat = S.catalog[key], typeL = { return: t('Returned to stock'), complaint: t('Complaint'), damage: t('Damage'), adjust: t('Stock corrected') };
-  view.innerHTML = `
-    <div class="card">
-      <div class="row" style="padding:0;align-items:flex-start"><div><div class="cust-head"><div class="nm">${esc(name)}</div></div>
-        <small>${esc(t(catOf(lots[0] || { category: cat?.category })))}${cat?.show ? ' · 🛍️ ' + t('In catalog') : ''}</small>
-        ${cat?.description ? `<small>${esc(cat.description)}</small>` : ''}</div>
-        <img id="iph" class="thumb" alt="" hidden></div>
-      <div class="cust-head" style="margin-top:8px"><div class="due"><div><span>${t('In stock')}</span><b>${inStock}</b></div>
-        <span>${t('Price')} ${money(maxP)}${lots[0] ? `<br>${t('Cost')} ${money(lots[0].unitCost)}` : ''}</span></div></div>
-    </div>
-    <div class="card">
-      <div class="kv"><span>${t('Total bought')}</span><b>${sum('in')}</b></div>
-      <div class="kv"><span>${t('Total sold')}</span><b>${sum('sale')}</b></div>
-      ${sum('return') ? `<div class="kv"><span>${t('Returned to stock')}</span><b>${sum('return')}</b></div>` : ''}
-      ${sum('damage') + sum('complaint') ? `<div class="kv"><span>${t('Damage / complaint')}</span><b>${sum('damage') + sum('complaint')}</b></div>` : ''}
-      ${lastIn ? `<div class="kv"><span>${t('Last came on')}</span><b>${fmtDate(lastIn)}</b></div><div class="kv"><span>${t('Sold since then')}</span><b>${soldSince}</b></div>` : ''}
-      ${ins[1] ? `<div class="kv"><span>${t('Came before that')}</span><b>${fmtDate(ins[1].date)}</b></div>` : ''}
-      ${avg ? `<div class="kv"><span>${isAdmin() ? t('Average selling price') : t('My average selling price')}</span><b>${money(Math.round(avg))}</b></div>` : ''}
-    </div>
-    <h3>📥 ${t('Came in (bought)')}</h3>
-    <ul class="list">${ins.map((m) => `<li class="row"><div><b>${fmtDate(m.date)}</b><small>${esc(m.supplier || '')}${m.billName && m.billName !== name ? ` · 🧾 ${esc(m.billName)}` : ''}</small></div>
-      <div class="amt">× ${m.qty}<small>${m.cost != null ? money(m.cost) : ''}</small></div></li>`).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>
-    <h3>📤 ${t('Went out (sold)')}</h3>
-    <ul class="list">${outs.map((m) => { const d = det[m.id];
-      return `<li class="row"><div><b>${fmtDate(m.date)}</b><small>${d && d.customer ? (d.book === S.sid && d.cid ? `<a href="#/customer/${d.cid}">${esc(d.customer)}</a>` : esc(d.customer)) + (isAdmin() ? ' · ' + esc(m.sellerName) : '') : esc(m.sellerName)}</small></div>
-        <div class="amt">× ${m.qty}${d && d.price != null ? `<small>${money(d.price)}</small>` : ''}</div></li>`; }).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>
-    ${backs.length ? `<h3>↩ ${t('Returns and corrections')}</h3><ul class="list">${backs.map((m) => `<li class="row"><div><b>${fmtDate(m.date)}</b><small>${typeL[m.type]} · ${esc(m.sellerName)}</small></div><div class="amt">${m.qty > 0 && m.type !== 'adjust' ? '' : ''}${m.type === 'adjust' && m.qty > 0 ? '+' : ''}${m.qty}</div></li>`).join('')}</ul>` : ''}
-    ${isAdmin() && lots.length ? `<h3>${t('Stock lots')}</h3><ul class="list">${lots.map((x) => `<li><a class="row" href="#/stock-edit/${x.id}"><div><b>${t('Qty')} ${x.qty}</b><small>${t('Cost')} ${money(x.unitCost)} · ${t('Price')} ${money(x.maxPrice)} · ${fmtDate(new Date(x.createdAt || 0).toISOString().slice(0, 10))}</small></div><span class="btn small">${t('Edit')}</span></a></li>`).join('')}</ul>` : ''}`;
-  if (cat?.hasPhoto) F.getDoc(F.doc(F.db, 'catalogPhotos', key)).then((d) => { if (d.exists() && $('#iph')) { $('#iph').src = d.data().data; $('#iph').hidden = false; } }).catch(() => {});
-}
-
-/**
- * Admin, once: build the movement log from everything entered before v15 (purchases, sales, returns).
- * Fixed ids make it safe to run again; new entries already write their own lines.
- */
-async function backfillMoves() {
-  if (!isAdmin() || S.settings.movesV1 || backfillMoves.running || !navigator.onLine) return;
-  backfillMoves.running = true;
-  try {
-    const all = [], add = (id, m) => all.push([id, m]);
-    const purchases = await F.fetchAll(F.collection(F.db, 'purchases'));
-    purchases.forEach((p) => (p.lines || []).forEach((l, i) => add(`pur_${p.id}_${i}`, { name: l.name, type: 'in', qty: l.qty, date: p.date, refId: p.id, cost: l.unitCost, supplier: p.supplier, billName: l.billName || '', sellerKey: S.users[p.addedBy]?.role === 'seller' ? keyOf(p.addedBy) : 'admin' })));
-    const keys = [...new Set(Object.entries(S.users).filter(([, u]) => u.role === 'seller').map(([uid, u]) => keyOf(uid, u)))];
-    for (const k of keys) {
-      const [sales, rets] = await Promise.all([F.fetchAll(F.sellerCol(k, 'sales')), F.fetchAll(F.sellerCol(k, 'returns'))]);
-      sales.forEach((sd) => (sd.items || []).forEach((l, i) => add(`sale_${sd.id}_${i}`, { name: l.name, type: 'sale', qty: l.qty, date: sd.date, refId: sd.id, sellerKey: k })));
-      rets.forEach((r) => (r.items || []).forEach((l, i) => add(`ret_${r.id}_${i}`, { name: l.name, type: r.condition === 'stock' ? 'return' : r.condition === 'complaint' ? 'complaint' : 'damage', qty: l.qty, date: r.date, refId: r.saleId, sellerKey: k })));
-    }
-    for (let i = 0; i < all.length; i += 400) { const b = F.writeBatch(F.db); all.slice(i, i + 400).forEach(([id, m]) => logMove(b, id, m)); await b.commit(); }
-    const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'settings', 'main'), { movesV1: true }, { merge: true }); await b.commit();
-    S.settings.movesV1 = true;
-  } catch (e) { console.warn('backfill', e); } finally { backfillMoves.running = false; }
-}
-
-async function renderStockEdit(id) {
-  if (!isAdmin()) return go('#/stock');
-  const s = S.stock[id];
-  if (!s) return go('#/stock');
-  setTitle(t('Edit stock item'), '#/stock');
-  const key = L.nameKey(s.name), cat0 = S.catalog[key] || {};
-  let photo = null;
-  view.innerHTML = `<form id="ef" class="card form">
-    <label>${t('Item name')}<input name="name" value="${esc(s.name)}"></label>
-    <label>${t('Category')}<select name="cat">${categories().map((c) => `<option value="${esc(c)}" ${c === catOf(s) ? 'selected' : ''}>${esc(t(c))}</option>`).join('')}</select></label>
-    <div class="two"><label>${t('Qty')}<input name="qty" type="number" value="${s.qty}"></label>
-    <label>${t('Cost each')}<input name="cost" type="number" step="any" value="${s.unitCost}"></label></div>
-    <label>${t('Selling price (max)')}<input name="price" type="number" step="any" value="${s.maxPrice}"></label>
-    <div class="muted small">${t('Added by')} ${esc(userName(s.addedBy))}</div>
-    <h3>🛍️ ${t('Shop catalog')}</h3>
-    <label class="radio"><input type="checkbox" name="show" ${cat0.show ? 'checked' : ''}> ${t('Show in the customer catalog')}</label>
-    <div class="row" style="padding:6px 0"><img id="cph" class="thumb" alt="" hidden>
-      <label class="btn small" style="flex:1">📷 ${t('Photo')}<input id="cpf" type="file" accept="image/*" hidden></label></div>
-    <label>${t('Description for customers')}<textarea name="desc" rows="2">${esc(cat0.description || '')}</textarea></label>
-    <p class="muted small">${t('Photo, description and the show switch are shared by all stock with this name. Cost is never shown to customers.')}</p>
-    <button class="btn primary" type="submit">${t('Save')}</button>
-    <button class="btn danger" type="button" id="del">${t('Delete item')}</button></form>`;
-  let oldPhoto = null;
-  if (cat0.hasPhoto) F.getDoc(F.doc(F.db, 'catalogPhotos', key)).then((d) => { if (d.exists()) { oldPhoto = d.data().data; if ($('#cph')) { $('#cph').src = oldPhoto; $('#cph').hidden = false; } } }).catch(() => {});
-  $('#cpf').onchange = async (e) => { const file = e.target.files[0]; if (!file) return; photo = await compressImage(file, 800, 250000); $('#cph').src = photo; $('#cph').hidden = false; };
-  $('#ef').onsubmit = (e) => {
-    e.preventDefault();
-    const f = e.target, upd = { name: f.name.value.trim(), category: f.cat.value, qty: Math.round(num(f.qty.value)), unitCost: num(f.cost.value), maxPrice: num(f.price.value) };
-    const b = F.writeBatch(F.db);
-    b.update(F.doc(F.db, 'stock', id), upd);
-    if (upd.qty !== s.qty) logMove(b, `adj_${id}_${Date.now()}`, { name: upd.name, type: 'adjust', qty: upd.qty - s.qty, sellerKey: 'admin', refId: id });
-    F.audit(b, S.user.uid, 'stock', `stock/${id}`, { name: s.name, category: catOf(s), qty: s.qty, unitCost: s.unitCost, maxPrice: s.maxPrice }, upd);
-    const nk = L.nameKey(upd.name), desc = f.desc.value.trim(), show = f.show.checked;
-    if (show || S.catalog[nk] || desc || photo) {
-      const lots = Object.values(S.stock).filter((x) => L.nameKey(x.id === id ? upd.name : x.name) === nk).map((x) => (x.id === id ? { ...x, ...upd } : x));
-      const live = lots.filter((x) => x.qty > 0);
-      b.set(F.doc(F.db, 'catalog', nk), { name: upd.name, category: upd.category, description: desc, show,
-        available: live.length > 0, price: Math.max(0, ...(live.length ? live : lots).map((x) => Number(x.maxPrice) || 0)),
-        hasPhoto: !!(photo || S.catalog[nk]?.hasPhoto), updatedAt: Date.now() }, { merge: true });
-      if (photo || (nk !== key && oldPhoto)) b.set(F.doc(F.db, 'catalogPhotos', nk), { data: photo || oldPhoto, updatedAt: Date.now() });
-      if (!photo && nk !== key && oldPhoto) b.set(F.doc(F.db, 'catalog', nk), { hasPhoto: true }, { merge: true });
-    }
-    // Renamed and no other stock keeps the old name: remove the old catalog entry.
-    if (nk !== key && S.catalog[key] && !Object.values(S.stock).some((x) => x.id !== id && L.nameKey(x.name) === key)) {
-      b.delete(F.doc(F.db, 'catalog', key)); if (cat0.hasPhoto) b.delete(F.doc(F.db, 'catalogPhotos', key));
-    }
-    F.commit(b, onWriteError); toast(t('Saved')); go('#/stock');
-  };
-  $('#del').onclick = () => {
-    if (!confirm(t('Delete this stock item?'))) return;
-    const b = F.writeBatch(F.db);
-    b.delete(F.doc(F.db, 'stock', id));
-    F.audit(b, S.user.uid, 'stock-delete', `stock/${id}`, s, null);
-    F.commit(b, onWriteError); go('#/stock');
-  };
-}
-
+// ---------- complaints ----------
 function renderComplaints() {
   setTitle(t('Complaint items'), true);
   const draw = () => {
     const list = Object.values(S.complaints).sort((a, b) => b.createdAt - a.createdAt);
     view.innerHTML = `<ul class="list">${list.map((c) => `<li class="card">
       <div><b>${esc(c.name)}</b> × ${c.qty}<small>${esc(c.customerName || '')} · ${esc(sellerName(c.sellerId))} · ${fmtDate(c.date)}</small></div>
-      ${isAdmin() ? `<div class="contact"><button class="btn" data-ok="${c.id}">${t('Back to stock')}</button><button class="btn danger" data-scrap="${c.id}">${t('Damage')}</button></div>` : ''}
+      ${isAdmin() ? `<div class="contact"><button class="btn" data-ok="${c.id}">${t('Repaired')}</button><button class="btn danger" data-scrap="${c.id}">${t('Damage')}</button></div>` : ''}
       </li>`).join('') || `<li class="muted">${t('No open complaints')}</li>`}</ul>`;
     $$('[data-ok]').forEach((b) => (b.onclick = () => {
       const c = S.complaints[b.dataset.ok], bt = F.writeBatch(F.db);
-      bt.update(F.doc(F.db, 'complaints', c.id), { status: 'to-stock', resolvedOn: today() });
-      logMove(bt, `cmp_${c.id}`, { name: c.name, type: 'return', qty: c.qty, sellerKey: c.sellerId, refId: c.returnId });
-      if (S.stock[c.stockId]) bt.update(F.doc(F.db, 'stock', c.stockId), { qty: F.increment(c.qty) });
-      else { const sc = F.collection(F.db, 'stock'); bt.set(F.doc(sc, F.newId(sc)), { name: c.name, qty: c.qty, unitCost: c.unitCost, maxPrice: L.maxPrice(c.unitCost, S.settings.defaultMarginPct), category: c.category || 'Others', addedBy: S.user.uid, createdAt: Date.now() }); }
-      F.commit(bt, onWriteError); toast(t('Moved to stock'));
+      bt.update(F.doc(F.db, 'complaints', c.id), { status: 'repaired', resolvedOn: today() });
+      F.commit(bt, onWriteError); toast(t('Marked repaired'));
     }));
     $$('[data-scrap]').forEach((b) => (b.onclick = () => {
       const c = S.complaints[b.dataset.scrap], bt = F.writeBatch(F.db);
       bt.update(F.doc(F.db, 'complaints', c.id), { status: 'scrapped', resolvedOn: today() });
-      logMove(bt, `cmp_${c.id}`, { name: c.name, type: 'damage', qty: c.qty, sellerKey: c.sellerId, refId: c.returnId });
       if (c.credited) { const sc = F.collection(F.db, 'scrapLosses'); bt.set(F.doc(sc, F.newId(sc)), { name: c.name, qty: c.qty, amount: L.round2(c.unitCost * c.qty), sellerId: c.sellerId, returnId: c.returnId, date: today(), createdAt: Date.now() }); }
       F.commit(bt, onWriteError); toast(t('Written off as damage'));
     }));
@@ -2342,8 +1949,6 @@ async function renderReport() {
     const rng = (c) => F.fetchAll(F.query(F.collection(F.db, c), F.where('date', '>=', from), F.where('date', '<=', to)));
     const [cexp, scrap, ssales] = await Promise.all([rng('companyExpenses'), rng('scrapLosses'), rng('scrapSales')]);
     const co = L.companyReport(reps, cexp, scrap, ssales);
-    const cr = L.categoryReport(raws.flatMap((r) => r.sales), raws.flatMap((r) => r.returns), lineCat);
-    const crRows = Object.entries(cr).sort((a, b) => b[1].value - a[1].value);
     $('#out').innerHTML = `<div class="scroll"><table class="rep"><thead><tr><th></th>${ss.map((p) => `<th>${esc(p.name)}${p.from !== from || p.to !== to ? `<small>${fmtDate(p.from)} – ${fmtDate(p.to)}</small>` : ''}</th>`).join('')}</tr></thead>
       <tbody>${fields.map(([k, l]) => `<tr class="${rowCls(k)}"><td>${lbl(l)}</td>${reps.map((r) => `<td>${money(r[k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
       <h3>${t('Company')}</h3><table class="rep">
@@ -2365,16 +1970,14 @@ async function renderReport() {
       <tr class="cash"><td>${t('Cash in hand')}</td><td>${money(co.cashInHand)}</td></tr>
       <tr class="net"><td>${t('Company net')}</td><td>${money(co.net)}</td></tr></table>
       <p class="muted small">${t('Cash in hand = cash collected − expenses paid in cash + money from scrap sold. Scrap taken as payment is not cash until it is sold.')}</p>
-      <h3>${t('By category')}</h3>
-      <table class="rep"><thead><tr><th>${t('Category')}</th><th>${t('Qty')}</th><th>${t('Sales')}</th><th>${t('Booked profit')}</th></tr></thead>
-      <tbody>${crRows.map(([c, r]) => `<tr><td>${esc(t(c))}</td><td>${r.qty}</td><td>${money(r.value)}</td><td>${money(r.profit)}</td></tr>`).join('') || `<tr><td colspan="4" class="muted">${t('No sales')}</td></tr>`}</tbody></table>
+      <p class="muted small">${t('Profit figures are estimates: the cost of each sale is worked out from the margin in App settings.')}</p>
       <button class="btn" id="pdf">PDF</button>`;
     $('#pdf').onclick = () => makePdf({
       title: 'Company report', subtitle: `${fmtDate(from)} to ${fmtDate(to)}`,
       head: ['Item', ...ss.map((s) => s.name)], rows: fields.map(([k, l]) => [l, ...reps.map((r) => pdfMoney(r[k]))]),
       foot: [`Collected: Cash ${pdfMoney(co.collectedCash)} | UPI ${pdfMoney(co.collectedUpi)} | Scrap ${pdfMoney(co.collectedScrap)}`, `Company expenses: ${pdfMoney(co.companyExpense)} (Cash ${pdfMoney(co.companyExpenseCash)} | UPI ${pdfMoney(co.companyExpenseUpi)})`,
         `Damage loss: ${pdfMoney(co.scrap)}`, `Scrap sold: ${pdfMoney(co.scrapSold)} (credited ${pdfMoney(co.scrapSoldCredited)}, gain ${pdfMoney(co.scrapGain)})`, `Cash in hand: ${pdfMoney(co.cashInHand)}`, `Company net: ${pdfMoney(co.net)}`,
-        '', 'By category (qty / sales / booked profit):', ...crRows.map(([c, r]) => `${c}: ${r.qty} / ${pdfMoney(r.value)} / ${pdfMoney(r.profit)}`)],
+        '', 'Profit figures are estimates (cost from the margin in App settings).'],
       file: `company-report-${from}-${to}.pdf`,
     });
   };
@@ -2555,7 +2158,8 @@ function renderMenu() {
     <li><a href="#/shop-link">🛍️ ${t('Shop link')}</a></li>
     ${isAdmin() ? `<li><a href="#/company-expenses">🏢 ${t('Company expenses')}</a></li>
       <li><a href="#/scrap">♻️ ${t('Scrap')}</a></li>
-      <li><a href="#/categories">🗂️ ${t('Categories and scrap types')}</a></li>
+      <li><a href="#/catalog">🛍️ ${t('Shop catalog')}</a></li>
+      <li><a href="#/categories">♻️ ${t('Scrap types')}</a></li>
       <li><a href="#/users">👤 ${t('Users')}</a></li><li><a href="#/backup">💾 ${t('Backup (Excel)')}</a></li><li><a href="#/app-settings">⚙️ ${t('App settings')}</a></li>` : ''}
     <li><a href="#/records">🖨️ ${t('Print list & statements')}</a></li>
     <li><a href="#/settings">🌓 ${t('Language, theme and password')}</a></li>
@@ -2673,7 +2277,7 @@ function renderRelogin(oldId, mode) {
 async function renderBackup() {
   setTitle(t('Backup (Excel)'), '#/menu');
   view.innerHTML = `<div class="card">
-    <p>${t('Downloads all data as one Excel file: customers, accounts, sales, collections, returns, notes, expenses, visits, orders, stock, scrap, purchases and users. Bill photos are not included.')}</p>
+    <p>${t('Downloads all data as one Excel file: customers, accounts, sales, collections, returns, notes, expenses, visits, orders, scrap and users.')}</p>
     <p class="muted small">${t('Do this once a week and keep the file in Google Drive or WhatsApp.')}</p>
     <button class="btn primary" id="go">${t('Download backup')}</button><div id="bs" class="muted small"></div></div>`;
   $('#go').onclick = async () => {
@@ -2707,10 +2311,8 @@ async function renderBackup() {
       add('Expenses', per.expenses.map((x) => ({ seller: x.seller, date: x.date, type: x.category, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, note: x.note })));
       add('Visits', per.visits.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], reason: x.reason, promisedDate: x.promiseDate || '', note: x.note })));
       add('Orders', per.orders.map((x) => ({ seller: x.seller, ordered: when(x.createdAt), customer: x.customerName, items: (x.items || []).map((i) => `${i.name} x${i.qty}`).join('; '), deliveryDate: x.deliveryDate, status: x.status, note: x.note })));
-      const [stock, purchases, cexp, comp, scrap, sIn, sSales] = await Promise.all([all('stock'), all('purchases'), all('companyExpenses'), all('complaints'), all('scrapLosses'), all('scrapIn'), all('scrapSales')]);
+      const [cexp, comp, scrap, sIn, sSales] = await Promise.all([all('companyExpenses'), all('complaints'), all('scrapLosses'), all('scrapIn'), all('scrapSales')]);
       add('Company expenses', cexp.map((x) => ({ date: x.date, type: x.category, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, note: x.note })));
-      add('Stock', stock.map((x) => ({ item: x.name, category: catOf(x), qty: x.qty, unitCost: x.unitCost, maxPrice: x.maxPrice, addedBy: userName(x.addedBy), added: when(x.createdAt), id: x.id })));
-      add('Purchases', purchases.map((x) => ({ date: x.date, supplier: x.supplier, items: items(x.lines), total: x.total, addedBy: userName(x.addedBy) })));
       add('Complaints', comp.map((x) => ({ date: x.date, item: x.name, qty: x.qty, customer: x.customerName, status: x.status, resolvedOn: x.resolvedOn || '' })));
       add('Damage losses', scrap.map((x) => ({ date: x.date, item: x.name, qty: x.qty, amount: x.amount })));
       add('Scrap taken', sIn.map((x) => ({ date: x.date, seller: holder(x.sellerKey), customer: x.customerName, items: (x.items || []).map((i) => `${i.type} ${i.value}`).join('; '), total: x.total })));
@@ -2732,45 +2334,32 @@ function renderAppSettings() {
   setTitle(t('App settings'), '#/menu');
   const s = S.settings;
   view.innerHTML = `<form id="as" class="card form">
-    <label>${t('Default margin % (on cost)')}<input name="dm" type="number" step="any" value="${s.defaultMarginPct}"></label>
+    <label>${t('Default margin % (on cost)')}<input name="dm" type="number" step="any" min="0" value="${s.defaultMarginPct}"></label>
+    <p class="muted small">${t('Used to estimate profit: the cost of an item sold for ₹1,000 at 100% margin is taken as ₹500. Changing it affects sales entered after the change.')}</p>
     <label>${t('Old balance margin %')}<input name="lm" type="number" step="any" value="${s.legacyMarginPct}"></label>
     <p class="muted small">${t('Changing the old balance margin affects accounts created after the change.')}</p>
     <label>${t("Admin's WhatsApp number (for day-end summaries)")}<input name="aw" type="tel" inputmode="tel" value="${esc(s.adminWa || '')}"></label>
-    <label>${t('Gemini API key (bill reading)')}<input name="gk" type="password" value="${esc(s.geminiKey || '')}" autocomplete="off"></label>
-    <label>${t('Gemini model')}<input name="gm" value="${esc(s.geminiModel || DEFAULT_MODEL)}"></label>
     <button class="btn primary" type="submit">${t('Save')}</button></form>
     <div class="card form" style="border-color:var(--bad)">
       <h3 style="margin-top:0;color:var(--bad)">🗑️ ${t('Delete all test data')}</h3>
-      <p class="small muted">${t('Removes all customers, accounts, sales, collections, returns, notes, visits, orders, expenses, stock, purchases, complaints, scrap, catalog and day closings. Keeps users, passwords, these settings, categories, scrap types, calendar events and shop WhatsApp numbers.')}</p>
+      <p class="small muted">${t('Removes all customers, accounts, sales, collections, returns, notes, visits, orders, expenses, complaints, scrap, catalog and day closings. Keeps users, passwords, these settings, categories, scrap types, calendar events and shop WhatsApp numbers.')}</p>
       <p class="small">${s.lastBackup === today() ? `✓ ${t('Backup taken today')}` : `⚠ ${t('Take a backup first (Menu → Backup). This button works only after today\'s backup.')}`}</p>
       <button class="btn danger" id="wipe" ${s.lastBackup === today() ? '' : 'disabled'}>${t('Delete all test data')}</button><div id="wipeS" class="small muted"></div></div>`;
   $('#wipe').onclick = () => wipeTestData();
   $('#as').onsubmit = (e) => {
     e.preventDefault();
     const f = e.target, b = F.writeBatch(F.db);
-    const upd = { defaultMarginPct: num(f.dm.value), legacyMarginPct: num(f.lm.value), adminWa: f.aw.value.trim(), geminiKey: f.gk.value.trim(), geminiModel: f.gm.value.trim() || DEFAULT_MODEL };
-    const oldM = s.defaultMarginPct;
+    const upd = { defaultMarginPct: Math.max(0, num(f.dm.value)), legacyMarginPct: num(f.lm.value), adminWa: f.aw.value.trim() };
     b.set(F.doc(F.db, 'settings', 'main'), upd, { merge: true });
     F.audit(b, S.user.uid, 'settings', 'settings/main', { defaultMarginPct: s.defaultMarginPct, legacyMarginPct: s.legacyMarginPct }, { defaultMarginPct: upd.defaultMarginPct, legacyMarginPct: upd.legacyMarginPct });
     F.commit(b, onWriteError); toast(t('Saved'));
     Object.assign(S.settings, upd);
-    // New margin: offer to re-price all stock now. Past sales keep their price.
-    const items = Object.values(S.stock).filter((x) => x.maxPrice !== L.maxPrice(x.unitCost, upd.defaultMarginPct));
-    if (upd.defaultMarginPct !== oldM && items.length && confirm(`${t('Margin changed to')} ${upd.defaultMarginPct}%.\n${t('Update the selling price of all')} ${items.length} ${t('stock items to cost +')} ${upd.defaultMarginPct}%?\n${t('Past sales do not change.')}`)) {
-      for (let i = 0; i < items.length; i += 400) {
-        const bt = F.writeBatch(F.db);
-        items.slice(i, i + 400).forEach((x) => bt.update(F.doc(F.db, 'stock', x.id), { maxPrice: L.maxPrice(x.unitCost, upd.defaultMarginPct) }));
-        if (i === 0) F.audit(bt, S.user.uid, 'reprice-all', 'stock', { marginPct: oldM }, { marginPct: upd.defaultMarginPct, items: items.length });
-        F.commit(bt, onWriteError);
-      }
-      toast(`${items.length} ${t('prices updated')}`);
-    }
   };
 }
 
 // ---------- delete all test data (admin) ----------
 const WIPE_TOP = ['stock', 'purchases', 'billPhotos', 'complaints', 'scrapLosses', 'companyExpenses', 'catalog', 'catalogPhotos', 'demand', 'scrapIn', 'scrapSales', 'stockMoves', 'phoneIndex', 'nameMap', 'meals', 'auditLog'];
-const WIPE_BOOK = ['customers', 'accounts', 'sales', 'collections', 'returns', 'notes', 'expenses', 'visits', 'orders', 'routeChanges', 'dayClose'];
+const WIPE_BOOK = ['customers', 'accounts', 'sales', 'collections', 'returns', 'notes', 'expenses', 'visits', 'orders', 'routeChanges', 'dayClose', 'meta'];
 async function wipeTestData() {
   if (!isAdmin()) return;
   if (!navigator.onLine) return toast(t('Connect to the internet first'), true);
@@ -2778,8 +2367,7 @@ async function wipeTestData() {
   const keys = [...new Set(Object.entries(S.users).filter(([, u]) => u.role === 'seller').map(([uid, u]) => keyOf(uid, u)))];
   $('#wipeS').textContent = t('Counting…');
   let nCust = 0; for (const k of keys) nCust += (await F.fetchAll(F.sellerCol(k, 'customers'))).length;
-  const nStock = Object.keys(S.stock).length;
-  if ((prompt(`${nCust} ${t('customers')} · ${nStock} ${t('stock items')} ${t('and everything else listed will be deleted for good.')}\n${t('Type DELETE to continue')}`) || '').trim() !== 'DELETE') { $('#wipeS').textContent = ''; return; }
+  if ((prompt(`${nCust} ${t('customers')} ${t('and everything else listed will be deleted for good.')}\n${t('Type DELETE to continue')}`) || '').trim() !== 'DELETE') { $('#wipeS').textContent = ''; return; }
   const btn = $('#wipe'); btn.disabled = true;
   const paths = [];
   for (const c of WIPE_TOP) (await F.fetchAll(F.collection(F.db, c))).forEach((d) => paths.push(F.doc(F.db, c, d.id)));
@@ -2796,61 +2384,19 @@ async function wipeTestData() {
 
 // ---------- categories & scrap types (admin) ----------
 function renderCategories() {
-  setTitle(t('Categories and scrap types'), '#/menu');
+  setTitle(t('Scrap types'), '#/menu');
   const draw = () => {
-    const cats = categories(), types = scrapTypes();
-    const count = (c) => Object.values(S.stock).filter((x) => catOf(x) === c).length;
-    view.innerHTML = `<div class="card"><h3 style="margin-top:0">🗂️ ${t('Stock categories')}</h3>
-      ${cats.map((c) => `<div class="kv"><span>${esc(t(c))} <small class="muted">(${count(c)})</small></span><span>${c === 'Others' ? '' : `<button class="btn small" data-ren="${esc(c)}">${t('Rename')}</button> <button class="x" data-cdel="${esc(c)}">×</button>`}</span></div>`).join('')}
-      <form id="cf2" class="toolbar"><input name="n" placeholder="${t('New category')}" required><button class="btn primary" type="submit">${t('Add')}</button></form>
-      <p class="muted small">${t('Deleting a category moves its items to Others.')}</p></div>
-      <div class="card"><h3 style="margin-top:0">♻️ ${t('Scrap types')}</h3>
+    const types = scrapTypes();
+    view.innerHTML = `<div class="card"><h3 style="margin-top:0">♻️ ${t('Scrap types')}</h3>
       ${types.map((c) => `<div class="kv"><span>${esc(t(c))}</span>${c === 'Others' ? '' : `<button class="x" data-sdel="${esc(c)}">×</button>`}</div>`).join('')}
-      <form id="sf2" class="toolbar"><input name="n" placeholder="${t('New scrap type')}" required><button class="btn primary" type="submit">${t('Add')}</button></form></div>
-      <div class="card"><h3 style="margin-top:0">🧾 ${t('Bill names remembered')}</h3>
-      ${Object.values(S.nameMap).sort((a, b) => a.billName.localeCompare(b.billName)).map((m) => `<div class="kv"><span class="small">${esc(m.billName)} → <b>${esc(m.ourName)}</b> <span class="muted">(${esc(t(m.category || 'Others'))})</span></span><button class="x" data-nmdel="${m.id}">×</button></div>`).join('') || `<div class="muted small">${t('None yet. They are learned when you save a bill read from a photo.')}</div>`}</div>`;
+      <form id="sf2" class="toolbar"><input name="n" placeholder="${t('New scrap type')}" required><button class="btn primary" type="submit">${t('Add')}</button></form></div>`;
     const saveSettings = (upd) => { const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'settings', 'main'), upd, { merge: true }); return b; };
-    const restock = (from, to, b0) => { // move stock (and catalog) from one category to another, in chunks
-      const ids = Object.values(S.stock).filter((x) => catOf(x) === from || x.category === from);
-      let b = b0, n = 0;
-      for (const x of ids) { b.update(F.doc(F.db, 'stock', x.id), { category: to }); x.category = to; if (++n % 400 === 0) { F.commit(b, onWriteError); b = F.writeBatch(F.db); } }
-      Object.values(S.catalog).filter((c) => c.category === from).forEach((c) => b.update(F.doc(F.db, 'catalog', c.id), { category: to }));
-      F.commit(b, onWriteError);
-    };
-    $('#cf2').onsubmit = (e) => {
-      e.preventDefault(); const n = e.target.n.value.trim();
-      if (!n || cats.some((c) => c.toLowerCase() === n.toLowerCase())) return toast(t('Already there'), true);
-      const next = [...cats.filter((c) => c !== 'Others'), n, 'Others'];
-      F.commit(saveSettings({ categories: next }), onWriteError); S.settings.categories = next; draw();
-    };
-    $$('[data-ren]').forEach((b) => (b.onclick = () => {
-      const old = b.dataset.ren, n = (prompt(t('New name for') + ' ' + old, old) || '').trim();
-      if (!n || n === old) return;
-      if (cats.some((c) => c.toLowerCase() === n.toLowerCase())) return toast(t('Already there'), true);
-      const next = cats.map((c) => (c === old ? n : c)), renames = { ...(S.settings.categoryRenames || {}), [old]: n };
-      const bt = saveSettings({ categories: next, categoryRenames: renames });
-      F.audit(bt, S.user.uid, 'category-rename', 'settings/main', { name: old }, { name: n });
-      S.settings.categories = next; S.settings.categoryRenames = renames;
-      restock(old, n, bt); toast(t('Saved')); draw();
-    }));
-    $$('[data-cdel]').forEach((b) => (b.onclick = () => {
-      const c = b.dataset.cdel;
-      if (!confirm(`${t('Delete category')} "${c}"? ${count(c)} ${t('items will move to Others.')}`)) return;
-      const next = cats.filter((x) => x !== c), bt = saveSettings({ categories: next });
-      F.audit(bt, S.user.uid, 'category-delete', 'settings/main', { name: c }, null);
-      restock(c, 'Others', bt); S.settings.categories = next; draw();
-    }));
     $('#sf2').onsubmit = (e) => {
       e.preventDefault(); const n = e.target.n.value.trim();
       if (!n || types.some((c) => c.toLowerCase() === n.toLowerCase())) return toast(t('Already there'), true);
       const next = [...types.filter((c) => c !== 'Others'), n, 'Others'];
       F.commit(saveSettings({ scrapTypes: next }), onWriteError); S.settings.scrapTypes = next; draw();
     };
-    $$('[data-nmdel]').forEach((b) => (b.onclick = () => {
-      if (!confirm(t('Forget this name?'))) return;
-      const bt = F.writeBatch(F.db); bt.delete(F.doc(F.db, 'nameMap', b.dataset.nmdel)); F.commit(bt, onWriteError);
-      delete S.nameMap[b.dataset.nmdel]; draw();
-    }));
     $$('[data-sdel]').forEach((b) => (b.onclick = () => {
       if (!confirm(t('Delete this scrap type?'))) return;
       const next = types.filter((x) => x !== b.dataset.sdel);
@@ -2860,6 +2406,72 @@ function renderCategories() {
   draw();
 }
 
+// ---------- shop catalog (admin keeps the items by hand: name, photo, description, price, available) ----------
+function renderCatalog() {
+  setTitle(t('Shop catalog'), '#/menu');
+  if (!isAdmin()) return go('#/home');
+  const draw = () => {
+    const list = Object.values(S.catalog).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    view.innerHTML = `<div class="toolbar"><a class="btn primary" href="#/catalog-edit/new">+ ${t('Add item')}</a><a class="btn" href="#/shop-link">🛍️ ${t('Shop link')}</a></div>
+      <p class="muted small">${t('These items are shown on the shop link. Tap Available / Sold out to change it.')}</p>
+      <ul class="list">${list.map((c) => `<li class="row"><a href="#/catalog-edit/${c.id}" style="flex:1;text-decoration:none;color:inherit"><b>${esc(c.name)}</b>
+        <small>${money(c.price || 0)}${c.show ? '' : ' · ' + t('Hidden')}${c.hasPhoto ? ' · 📷' : ''}</small></a>
+        <button class="pill ${c.available ? 'ok' : 'bad'}" data-av="${c.id}">${c.available ? t('Available') : t('Sold out')}</button></li>`).join('') || `<li class="muted">${t('No items yet')}</li>`}</ul>`;
+    $$('[data-av]').forEach((b) => (b.onclick = () => {
+      const c = S.catalog[b.dataset.av], bt = F.writeBatch(F.db);
+      bt.update(F.doc(F.db, 'catalog', c.id), { available: !c.available, updatedAt: Date.now() });
+      F.commit(bt, onWriteError); c.available = !c.available; draw();
+    }));
+  };
+  draw();
+  S.refresh = draw;
+}
+
+async function renderCatalogEdit(key) {
+  if (!isAdmin()) return go('#/home');
+  const isNew = key === 'new', c0 = isNew ? {} : S.catalog[key];
+  if (!c0) return go('#/catalog');
+  setTitle(isNew ? t('Add item') : t('Edit item'), '#/catalog');
+  let photo = null, oldPhoto = null;
+  view.innerHTML = `<form id="ef" class="card form">
+    <label>${t('Item name')}<input name="name" value="${esc(c0.name || '')}" required></label>
+    <label>${t('Price')}<input name="price" type="number" step="any" min="0" inputmode="decimal" value="${c0.price || ''}"></label>
+    <div class="row" style="padding:6px 0"><img id="cph" class="thumb" alt="" hidden>
+      <label class="btn small" style="flex:1">📷 ${t('Photo')}<input id="cpf" type="file" accept="image/*" hidden></label></div>
+    <label>${t('Description for customers')}<textarea name="desc" rows="2">${esc(c0.description || '')}</textarea></label>
+    <label class="radio"><input type="checkbox" name="show" ${isNew || c0.show ? 'checked' : ''}> ${t('Show in the customer catalog')}</label>
+    <label class="radio"><input type="checkbox" name="avail" ${isNew || c0.available ? 'checked' : ''}> ${t('Available')}</label>
+    <button class="btn primary" type="submit">${t('Save')}</button>
+    ${isNew ? '' : `<button class="btn danger" type="button" id="del">${t('Delete item')}</button>`}</form>`;
+  if (c0.hasPhoto) F.getDoc(F.doc(F.db, 'catalogPhotos', key)).then((d) => { if (d.exists()) { oldPhoto = d.data().data; if ($('#cph')) { $('#cph').src = oldPhoto; $('#cph').hidden = false; } } }).catch(() => {});
+  $('#cpf').onchange = async (e) => { const file = e.target.files[0]; if (!file) return; photo = await compressImage(file, 800, 250000); $('#cph').src = photo; $('#cph').hidden = false; };
+  $('#ef').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, name = f.name.value.trim(); if (!name) return;
+    const nk = L.nameKey(name);
+    if (!isNew && nk !== key && c0.hasPhoto && !photo && !oldPhoto) { // renamed: the old photo must be copied to the new name first
+      const d = await F.getDoc(F.doc(F.db, 'catalogPhotos', key)).catch(() => null);
+      if (d?.exists()) oldPhoto = d.data().data; else return toast(t('The photo is still loading. Try again in a moment.'), true);
+    }
+    if (nk !== key && S.catalog[nk]) return toast(t('An item with this name is already in the catalog'), true);
+    const b = F.writeBatch(F.db);
+    const docData = { name, category: '', description: f.desc.value.trim(), show: f.show.checked, available: f.avail.checked, price: L.round2(num(f.price.value)), hasPhoto: !!(photo || oldPhoto || c0.hasPhoto), updatedAt: Date.now() };
+    b.set(F.doc(F.db, 'catalog', nk), docData);
+    if (photo || (nk !== key && oldPhoto)) b.set(F.doc(F.db, 'catalogPhotos', nk), { data: photo || oldPhoto, updatedAt: Date.now() });
+    if (!isNew && nk !== key) { b.delete(F.doc(F.db, 'catalog', key)); if (c0.hasPhoto) b.delete(F.doc(F.db, 'catalogPhotos', key)); }
+    F.audit(b, S.user.uid, 'catalog', `catalog/${nk}`, isNew ? null : { name: c0.name, price: c0.price, show: c0.show, available: c0.available }, { name, price: docData.price, show: docData.show, available: docData.available });
+    F.commit(b, onWriteError); S.catalog[nk] = { id: nk, ...docData }; if (!isNew && nk !== key) delete S.catalog[key];
+    toast(t('Saved')); go('#/catalog');
+  };
+  const del = $('#del');
+  if (del) del.onclick = () => {
+    if (!confirm(t('Delete this item from the catalog?'))) return;
+    const b = F.writeBatch(F.db); b.delete(F.doc(F.db, 'catalog', key)); if (c0.hasPhoto) b.delete(F.doc(F.db, 'catalogPhotos', key));
+    F.audit(b, S.user.uid, 'catalog-delete', `catalog/${key}`, { name: c0.name }, null);
+    F.commit(b, onWriteError); delete S.catalog[key]; go('#/catalog');
+  };
+}
+
 // ---------- shop link (public catalog) ----------
 const shopUrl = (key) => new URL('shop.html?s=' + encodeURIComponent(key), location.href.split('#')[0]).href;
 
@@ -2867,7 +2479,7 @@ async function renderShopLink() {
   setTitle(t('Shop link'), '#/menu');
   const shown = Object.values(S.catalog).filter((c) => c.show).length;
   const intro = `<p class="muted small">${t('Customers open this link without logging in. They see the photo, description, price and whether the item is available — never the cost. "Ask on WhatsApp" goes to your number.')}</p>
-    <p class="small">🛍️ ${shown} ${t('items are shown in the catalog.')} ${isAdmin() ? `<a href="#/stock">${t('Choose items in Stock')}</a>` : ''}</p>`;
+    <p class="small">🛍️ ${shown} ${t('items are shown in the catalog.')} ${isAdmin() ? `<a href="#/catalog">${t('Edit the catalog')}</a>` : ''}</p>`;
   if (isAdmin()) {
     const rows = await Promise.all(sellers().map(async (x) => { const d = await F.getDoc(F.doc(F.db, 'shopSellers', x.id)).catch(() => null); return { ...x, wa: d?.exists() ? d.data().wa : '' }; }));
     view.innerHTML = `<div class="card">${intro}</div><ul class="list">${rows.map((x) => `<li class="card"><b>${esc(x.name)}</b>
@@ -2933,8 +2545,7 @@ async function renderScrap() {
 
 // ---------- orders ----------
 const orderText = (o) => o.items.map((i) => `${i.name} × ${i.qty}`).join(', ');
-const stockQtyByName = (name) => Object.values(S.stock).filter((x) => x.name.trim().toLowerCase() === String(name).trim().toLowerCase()).reduce((s2, x) => s2 + Math.max(0, x.qty), 0);
-const orderLineHtml = (i = {}) => `<div class="orderline"><input name="on" list="snames" placeholder="${t('Item (from stock or type)')}" value="${esc(i.name || '')}">
+const orderLineHtml = (i = {}) => `<div class="orderline"><input name="on" list="snames" placeholder="${t('Item')}" value="${esc(i.name || '')}">
   <input name="oq" type="number" min="1" inputmode="numeric" value="${i.qty || 1}"><button type="button" class="x" data-orm>×</button></div>`;
 
 async function renderOrderForm(cid, oid) {
@@ -2956,8 +2567,7 @@ async function renderOrderForm(cid, oid) {
     <form id="of" class="card form">
     ${o && o.status !== 'pending' ? `<div class="banner warn">${o.status === 'delivered' ? '✓ ' + t('Delivered') + ' ' + fmtDate(o.deliveredOn) : t('Cancelled')}</div>` : ''}
     <label>${t('Items')}</label><div id="olines">${(o?.items || [{}]).map(orderLineHtml).join('')}</div>
-    <datalist id="snames">${[...new Set(Object.values(S.stock).filter((x) => x.qty > 0).map((x) => x.name))].sort().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
-    <div id="ohint" class="small muted"></div>
+    <datalist id="snames">${knownNames().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
     <button type="button" class="btn ghost small" id="addO">+ ${t('Another item')}</button>
     <label>${t('Deliver on')} <small class="muted">(${t('next route day')})</small><input name="dd" type="date" value="${def}" required></label>
     <label>${t('Note (optional)')}<input name="note" value="${esc(o?.note || '')}"></label>
@@ -2965,8 +2575,7 @@ async function renderOrderForm(cid, oid) {
     <button class="btn primary" type="submit">${t('Save order')}</button>
     ${o && o.status === 'pending' ? `<div class="contact"><a class="btn" href="#/deliver/${o.id}">✓ ${t('Delivered')}</a><button type="button" class="btn" id="nw">+7 ${t('Next week')}</button><button type="button" class="btn danger" id="ocx">${t('Cancel order')}</button></div>` : ''}</form>`;
   const f = $('#of');
-  const hint = () => { $('#ohint').textContent = $$('.orderline', f).map((r) => $('[name=on]', r).value.trim()).filter(Boolean).map((n) => `${n}: ${t('in stock')} ${stockQtyByName(n)}`).join(' · '); };
-  const bind = () => { $$('[data-orm]', f).forEach((b) => (b.onclick = () => { if ($$('.orderline', f).length > 1) b.parentElement.remove(); hint(); })); $$('[name=on]', f).forEach((i) => (i.onchange = hint)); hint(); };
+  const bind = () => { $$('[data-orm]', f).forEach((b) => (b.onclick = () => { if ($$('.orderline', f).length > 1) b.parentElement.remove(); })); };
   $('#addO').onclick = () => { $('#olines').insertAdjacentHTML('beforeend', orderLineHtml()); bind(); };
   bind();
   const save = (patch) => {
@@ -3028,12 +2637,10 @@ async function renderOrders() {
     let body = '';
     if (tab === 'buy') {
       const demand = await F.fetchAll(F.collection(F.db, 'demand'));
-      const rows = L.toBuy(demand, Object.values(S.stock)), need = rows.filter((r) => r.need > 0), ok = rows.filter((r) => !r.need);
-      const tr = (r) => `<tr><td>${esc(r.name)}<small>${t('first needed')} ${fmtDate(r.first)}</small></td><td>${r.qty}</td><td>${r.inStock}</td><td><b>${r.need || '—'}</b></td></tr>`;
-      const head = `<thead><tr><th>${t('Item')}</th><th>${t('Ordered')}</th><th>${t('In stock')}</th><th>${t('Buy')}</th></tr></thead>`;
-      body = `<p class="muted small">${t('Pending orders of all sellers compared with stock. Customer names are not shown here.')}</p>
-        <h3>🛒 ${t('Need to buy')}</h3>${need.length ? `<table class="rep">${head}<tbody>${need.map(tr).join('')}</tbody></table>` : `<div class="muted small">${t('Nothing to buy — stock covers all orders.')}</div>`}
-        ${ok.length ? `<h3>✓ ${t('Enough in stock')}</h3><table class="rep">${head}<tbody>${ok.map(tr).join('')}</tbody></table>` : ''}`;
+      const rows = L.toBuy(demand, []);
+      const tr = (r) => `<tr><td>${esc(r.name)}<small>${t('first needed')} ${fmtDate(r.first)}</small></td><td><b>${r.qty}</b></td></tr>`;
+      body = `<p class="muted small">${t('Pending orders of all sellers added up by item. Customer names are not shown here.')}</p>
+        <h3>🛒 ${t('Ordered items')}</h3>${rows.length ? `<table class="rep"><thead><tr><th>${t('Item')}</th><th>${t('Ordered')}</th></tr></thead><tbody>${rows.map(tr).join('')}</tbody></table>` : `<div class="muted small">${t('No pending orders')}</div>`}`;
     } else {
       const all = (await F.fetchAll(F.query(F.sellerCol(S.sid, 'orders'), F.where('status', '==', 'pending')))).sort((a, b) => (a.deliveryDate < b.deliveryDate ? -1 : 1));
       if (tab === 'carry') {
@@ -3042,7 +2649,7 @@ async function renderOrders() {
         list.sort((a, b) => (pos.get(a.customerId) ?? 1e9) - (pos.get(b.customerId) ?? 1e9));
         const agg = {}; list.forEach((o) => o.items.forEach((i) => { const k = i.name.trim(); agg[k] = (agg[k] || 0) + Number(i.qty || 0); }));
         body = `<div class="toolbar"><input type="date" id="od" value="${day}"></div>
-          <div class="card"><b>📦 ${t('Load these items')}</b>${Object.entries(agg).map(([n, q]) => `<div class="kv"><span>${esc(n)}</span><span><b>× ${q}</b> <small class="muted">${t('in stock')} ${stockQtyByName(n)}</small></span></div>`).join('') || `<div class="muted small">${t('No deliveries for this day')}</div>`}</div>
+          <div class="card"><b>📦 ${t('Load these items')}</b>${Object.entries(agg).map(([n, q]) => `<div class="kv"><span>${esc(n)}</span><span><b>× ${q}</b></span></div>`).join('') || `<div class="muted small">${t('No deliveries for this day')}</div>`}</div>
           <ul class="list">${list.map((o) => { const c = S.customers[o.customerId]; return `<li><a class="row" href="#/order-edit/${o.id}"><div>${placeBadge(c)}<b>${esc(o.customerName)}</b><small>${esc(orderText(o))}</small>${noteLine(o)}</div>
             <span class="pill ${o.deliveryDate < day ? 'bad' : 'ok'}">${o.deliveryDate < day ? t('Late') + ' ' + shortDate(o.deliveryDate) : shortDate(o.deliveryDate)}</span></a></li>`; }).join('')}</ul>`;
       } else {
@@ -3124,13 +2731,62 @@ async function renderCloseDay() {
   await draw();
 }
 
+
+// ---------- calculator (Home, under the calendar) ----------
+/** Evaluate "12×450+5%"-style input without eval: × ÷ before + −; "a + b%" adds b% of a, a lone "b%" is b/100. */
+function calcEval(expr) {
+  const tk = String(expr).match(/\d*\.?\d+%?|[+\-×÷]/g) || [];
+  const val = (t, prefix, op) => { const p = t.endsWith('%'), n = parseFloat(t); if (!p) return n; return (op === '+' || op === '−' || op === '-') && prefix != null ? (prefix * n) / 100 : n / 100; };
+  let sum = 0, sumOp = '+', term = null, termOp = null, lastAdd = null;
+  const flush = () => { if (term == null) return; sum = sumOp === '+' ? sum + term : sum - term; term = null; };
+  for (let i = 0; i < tk.length; i++) {
+    const t = tk[i];
+    if (/[+\-×÷]/.test(t) && t.length === 1) {
+      if (t === '×' || t === '÷') termOp = t;
+      else { flush(); sumOp = t === '+' ? '+' : '-'; lastAdd = sum; termOp = null; }
+      continue;
+    }
+    const v = termOp ? parseFloat(t) / (t.endsWith('%') ? 100 : 1) : val(t, lastAdd, sumOp === '+' ? '+' : '-');
+    if (term == null || !termOp) term = v; else term = termOp === '×' ? term * v : term / v;
+    termOp = null;
+  }
+  flush();
+  return Number.isFinite(sum) ? Math.round(sum * 100) / 100 : NaN;
+}
+function mountCalculator(el) {
+  if (!el) return;
+  let expr = '', hist = '', done = false;
+  const keys = ['C', '⌫', '%', '÷', '7', '8', '9', '×', '4', '5', '6', '−', '1', '2', '3', '+', '0', '.', '='];
+  const fmt = (n) => (Number.isFinite(n) ? n.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : t('Error'));
+  const draw = () => {
+    el.innerHTML = `<div class="calc"><div class="calc-h">${esc(hist)}</div><div class="calc-d">${esc(expr || '0')}</div>
+      <div class="calc-k">${keys.map((k) => `<button type="button" class="ck ${/[÷×−+=]/.test(k) ? 'op' : ''} ${k === '0' ? 'z' : ''} ${k === 'C' || k === '⌫' ? 'fn' : ''}" data-k="${k}">${k}</button>`).join('')}</div></div>`;
+    $$('[data-k]', el).forEach((b) => (b.onclick = () => press(b.dataset.k)));
+  };
+  const press = (k) => {
+    const last = expr.slice(-1);
+    if (done && (/\d/.test(k) || k === '.')) expr = ''; // a digit after = starts a new sum
+    done = false;
+    if (k === 'C') { expr = ''; hist = ''; }
+    else if (k === '⌫') expr = expr.slice(0, -1);
+    else if (k === '=') { if (!expr) return; const r0 = calcEval(expr.replace(/−/g, '-')), r = Math.abs(r0) < 1e15 ? r0 : NaN; hist = `${expr} =`; expr = Number.isFinite(r) ? String(r).replace('-', '−') : ''; if (!Number.isFinite(r)) hist += ` ${t('Error')}`; done = true; }
+    else if (/[÷×−+]/.test(k)) { if (!expr && k !== '−') return; expr = /[÷×−+]/.test(last) ? expr.slice(0, -1) + k : expr + k; }
+    else if (k === '%') { if (/\d/.test(last)) expr += '%'; }
+    else if (k === '.') { const cur = expr.split(/[÷×−+]/).pop(); if (!cur.includes('.') && !cur.includes('%')) expr += cur ? '.' : '0.'; }
+    else { if (last === '%') return; expr += k; }
+    draw();
+    const d = $('.calc-d', el); if (d && /[÷×−+%]/.test(expr) && !/[÷×−+]$/.test(expr)) { const r = calcEval(expr.replace(/−/g, '-')); if (Number.isFinite(r)) d.dataset.preview = '= ' + fmt(r); }
+  };
+  draw();
+}
+
 // ---------- shell ----------
 function applyNav() {
   const ic = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
   $('#nav').innerHTML = [['#/home', 'M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z', 'Home'],
     ['#/customers', 'M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1M9 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6M22 19v-1a4 4 0 0 0-3-3.9M16 4.1a3 3 0 0 1 0 5.8', 'Customers'],
-    ['#/stock', 'M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8', 'Stock'], ['#/report', 'M4 20V10M10 20V4M16 20v-7M22 20H2', 'Reports'],
-    ['#/orders', 'M1 3h13v12H1zM14 8h4l3 3v4h-7M5.5 18.5a2 2 0 1 0 0-.01M17.5 18.5a2 2 0 1 0 0-.01', 'Orders'], ['#/menu', 'M4 6h16M4 12h16M4 18h16', 'Menu']]
+    ['#/orders', 'M1 3h13v12H1zM14 8h4l3 3v4h-7M5.5 18.5a2 2 0 1 0 0-.01M17.5 18.5a2 2 0 1 0 0-.01', 'Orders'], ['#/report', 'M4 20V10M10 20V4M16 20v-7M22 20H2', 'Reports'],
+    ['#/menu', 'M4 6h16M4 12h16M4 18h16', 'Menu']]
     .map(([h, d, l]) => `<a href="${h}">${ic(d)}${t(l)}</a>`).join('');
   document.documentElement.lang = getLang();
 }

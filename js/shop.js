@@ -27,7 +27,8 @@ function draw() {
   const items = data.items.filter((i) => (cat === 'all' || (i.category || 'Others') === cat) && (!q || i.name.toLowerCase().includes(q)))
     .sort((a, b) => (b.available ? 1 : 0) - (a.available ? 1 : 0) || a.name.localeCompare(b.name));
   const cats = [...new Set(data.items.map((i) => i.category || 'Others'))].sort();
-  $('#cats').innerHTML = [['all', t('All'), data.items.length], ...cats.map((c) => [c, t(c), data.items.filter((i) => (i.category || 'Others') === c).length])]
+  // Chips only when the items have more than one category (the catalog is now kept without categories).
+  $('#cats').innerHTML = cats.length < 2 ? '' : [['all', t('All'), data.items.length], ...cats.map((c) => [c, t(c), data.items.filter((i) => (i.category || 'Others') === c).length])]
     .map(([k, l, n]) => `<button class="fchip ${k === cat ? 'on' : ''}" data-c="${esc(k)}">${esc(l)} <small>${n}</small></button>`).join('');
   document.querySelectorAll('[data-c]').forEach((b) => (b.onclick = () => { cat = b.dataset.c; draw(); }));
   $('#grid').innerHTML = items.map((i) => {
