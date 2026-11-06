@@ -643,6 +643,18 @@ const ML = {
   'Discounts': 'ഡിസ്കൗണ്ടുകൾ',
   'Delete this entry?': 'ഈ എൻട്രി ഡിലീറ്റ് ചെയ്യണോ?',
   'Amount 0 deletes this collection. Continue?': 'തുക 0 ആക്കിയാൽ ഈ കളക്ഷൻ ഡിലീറ്റ് ആകും. തുടരണോ?',
+  'UPI QR': 'UPI QR',
+  'Show UPI QR': 'UPI QR കാണിക്കുക',
+  'My UPI': 'എന്റെ UPI',
+  'Your UPI ID is not set yet. Set it now?': 'നിങ്ങളുടെ UPI ID ഇതുവരെ ചേർത്തിട്ടില്ല. ഇപ്പോൾ ചേർക്കണോ?',
+  'Scan and enter the amount': 'സ്കാൻ ചെയ്ത് തുക ടൈപ്പ് ചെയ്യുക',
+  'After the money arrives in your UPI app, save the collection.': 'പണം നിങ്ങളുടെ UPI ആപ്പിൽ വന്നത് കണ്ട ശേഷം കളക്ഷൻ സേവ് ചെയ്യുക.',
+  'Customers scan this QR to pay straight into your own UPI account. Find your UPI ID in GPay / PhonePe / Paytm (profile).': 'കസ്റ്റമർ ഈ QR സ്കാൻ ചെയ്താൽ പണം നേരെ നിങ്ങളുടെ സ്വന്തം UPI അക്കൗണ്ടിലേക്ക് വരും. UPI ID GPay / PhonePe / Paytm-ലെ പ്രൊഫൈലിൽ കാണാം.',
+  'UPI ID': 'UPI ID',
+  'Name shown to the customer': 'കസ്റ്റമർക്ക് കാണിക്കുന്ന പേര്',
+  'Show my QR': 'എന്റെ QR കാണിക്കുക',
+  'Test once: scan it from another phone and send ₹1.': 'ഒരു തവണ ടെസ്റ്റ് ചെയ്യുക: മറ്റൊരു ഫോണിൽ നിന്ന് സ്കാൻ ചെയ്ത് ₹1 അയച്ചു നോക്കുക.',
+  'That does not look like a UPI ID (example: name@okaxis)': 'ഇത് ശരിയായ UPI ID അല്ല (ഉദാ: name@okaxis)',
 };
 
 let lang = (() => { try { return localStorage.getItem('lang') || 'en'; } catch { return 'en'; } })();

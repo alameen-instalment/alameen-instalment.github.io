@@ -150,11 +150,12 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 function selectSeller(sid) {
   S.sellerSubs.forEach((u) => u()); S.sellerSubs = [];
-  S.sid = sid || null; S.customers = {}; S.accounts = {}; S.routeChanges = {}; S.itemNames = []; S.itemPrices = {};
+  S.sid = sid || null; S.customers = {}; S.accounts = {}; S.routeChanges = {}; S.itemNames = []; S.itemPrices = {}; S.upi = null;
   if (isAdmin()) localStorage.setItem('sid', sid || '');
   if (!sid) return;
   S.sellerSubs.push(F.onSnapshot(F.sellerCol(sid, 'routeChanges'), (qs) => { S.routeChanges = {}; qs.forEach((d) => (S.routeChanges[d.id] = { id: d.id, ...d.data() })); live(); }));
   S.sellerSubs.push(F.onSnapshot(F.sellerCol(sid, 'customers'), (qs) => { S.customers = {}; qs.forEach((d) => (S.customers[d.id] = { id: d.id, ...d.data() })); live(); }));
+  S.sellerSubs.push(F.onSnapshot(F.sellerDoc(sid, 'meta', 'upi'), (d) => { S.upi = d.exists() ? d.data() : null; }));
   S.sellerSubs.push(F.onSnapshot(F.sellerDoc(sid, 'meta', 'items'), (d) => {
     const x = d.exists() ? d.data() : {}, its = Object.entries(x).filter(([k, v]) => k.startsWith('i_') && v && v.name);
     S.itemNames = its.map(([, v]) => v.name); S.itemPrices = Object.fromEntries(its.map(([k, v]) => [k.slice(2), v.price]));
@@ -264,6 +265,7 @@ const routes = [
   [/^#\/deliver\/(\w+)$/, renderDeliver],
   [/^#\/close-day$/, renderCloseDay],
   [/^#\/collections$/, renderCollections],
+  [/^#\/upi$/, renderUpiSetup],
   [/^#\/cash-sale$/, renderCashSale],
   [/^#\/catalog$/, renderCatalog],
   [/^#\/catalog-edit\/([\w-]+)$/, renderCatalogEdit],
@@ -347,7 +349,8 @@ async function renderHome() {
       <a class="tile" href="#/pick/sale">+ ${t('New sale')}</a>
       <a class="tile" href="#/pick/order">🚚 + ${t('Order')}</a>
       <a class="tile" href="#/cash-sale">🛒 ${t('Cash sale')}</a>
-      <a class="tile wide" href="#/expenses">+ ${t('Expense')}</a>
+      <a class="tile" href="#/expenses">+ ${t('Expense')}</a>
+      <button type="button" class="tile" id="upiTile">📲 ${t('UPI QR')}</button>
     </div>
     <a class="btn ghost" href="#/close-day">${closed ? '✓ ' + t('Day closed — view') : '🌙 ' + t('Close today')}</a>
     <h3>${t("Today's tasks")} ${due.length ? `<span class="pill bad">${due.length}</span>` : ''}</h3>
@@ -359,6 +362,7 @@ async function renderHome() {
   bindSellerBar();
   bindAlerts();
   bindMeal();
+  const ut = $('#upiTile'); if (ut) ut.onclick = () => showUpiQr();
   mountCalendar($('#calw')); mountCalculator($('#calcw'));
   setTimeout(maintainBook, 3000);
   const rt = $('#routeTile'); if (rt) rt.onclick = () => { try { sessionStorage.setItem('custDay', 'today'); } catch {} go('#/customers'); };
@@ -1491,6 +1495,7 @@ function renderCollect(cid, aid) {
       <div id="slines">${scrapLineHtml()}</div>
       <button type="button" class="btn ghost small" id="addS">+ ${t('Another type')}</button></div>
     <label>${t('Amount received')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" autofocus></label>
+    <button type="button" class="btn upiqr" id="upiQrBtn" hidden>📲 ${t('Show UPI QR')}</button>
     <details id="discBox" class="discbox"><summary>💸 ${t('Discount')}</summary>
       <div class="discrow"><input name="disc" type="number" step="any" min="0" inputmode="decimal" placeholder="0">
         <div class="seg" style="margin:0"><label><input type="radio" name="dunit" value="rs" checked><span>₹</span></label><label><input type="radio" name="dunit" value="pct"><span>%</span></label></div></div>
@@ -1516,7 +1521,10 @@ function renderCollect(cid, aid) {
   f.disc.oninput = showDisc; f.amt.addEventListener('input', showDisc);
   $$('input[name=dunit]', f).forEach((r) => (r.onchange = showDisc));
   $('#settle').onclick = () => { f.querySelector('input[name=dunit][value=rs]').checked = true; f.disc.value = Math.max(0, L.round2(a.balance - num(f.amt.value))); showDisc(); };
-  const onMode = () => { const sc = pickedMode('mode', f) === 'scrap'; $('#scrapBox').hidden = !sc; f.amt.readOnly = sc; if (sc) sum(); showDisc(); };
+  const qrBtn = () => { const up = pickedMode('mode', f) === 'upi', v = L.round2(num(f.amt.value)); $('#upiQrBtn').hidden = !up; $('#upiQrBtn').textContent = `📲 ${t('Show UPI QR')}${v > 0 ? ' · ' + money(v) : ''}`; };
+  $('#upiQrBtn').onclick = () => showUpiQr(L.round2(num(f.amt.value)), `${APP_NAME} - ${c.name}`);
+  f.amt.addEventListener('input', qrBtn);
+  const onMode = () => { const sc = pickedMode('mode', f) === 'scrap'; $('#scrapBox').hidden = !sc; f.amt.readOnly = sc; if (sc) sum(); showDisc(); qrBtn(); };
   $$('input[name=mode]', f).forEach((r) => (r.onchange = onMode));
   $('#addS').onclick = () => { $('#slines').insertAdjacentHTML('beforeend', scrapLineHtml()); bindS(); };
   bindS(); onMode();
@@ -2166,6 +2174,7 @@ function renderMenu() {
     ${S.sid ? `<li><a href="#/close-day">🌙 ${t('Close today')}</a></li>` : ''}
     <li><a href="#/complaints">🛠️ ${t('Complaint items')} (${Object.keys(S.complaints).length})</a></li>
     <li><a href="#/shop-link">🛍️ ${t('Shop link')}</a></li>
+    ${S.sid ? `<li><a href="#/upi">📲 ${t('My UPI')}</a></li>` : ''}
     ${isAdmin() ? `<li><a href="#/company-expenses">🏢 ${t('Company expenses')}</a></li>
       <li><a href="#/scrap">♻️ ${t('Scrap')}</a></li>
       <li><a href="#/catalog">🛍️ ${t('Shop catalog')}</a></li>
@@ -2795,6 +2804,66 @@ async function renderCollections() {
     }));
   };
   await draw();
+}
+
+// ---------- UPI QR (each seller's own UPI ID; payments go straight to that seller) ----------
+// Kept in the seller's book: sellers/<key>/meta/upi {vpa, name}. The QR is made on the phone (works offline).
+// The app cannot see whether the money arrived: the seller checks their UPI app, then saves the collection.
+const VPA_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z][a-zA-Z0-9.-]{1,64}$/;
+function upiUri(u, amount, note) {
+  const q = [`pa=${encodeURIComponent(u.vpa).replace(/%40/g, "@")}`, `pn=${encodeURIComponent(u.name || u.vpa)}`];
+  if (amount > 0) q.push(`am=${(Math.round(amount * 100) / 100).toFixed(2)}`);
+  q.push('cu=INR');
+  if (note) q.push(`tn=${encodeURIComponent(String(note).slice(0, 50))}`);
+  return `upi://pay?${q.join('&')}`;
+}
+function qrSvg(text) {
+  /* global qrcode */
+  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  return q.createSvgTag({ cellSize: 8, margin: 4, scalable: true });
+}
+/** Full-screen QR card (always dark on white so every phone camera reads it). */
+function showUpiQr(amount = 0, note = '') {
+  const u = S.upi;
+  if (!u?.vpa) { if (confirm(t('Your UPI ID is not set yet. Set it now?'))) go('#/upi'); return; }
+  const ov = document.createElement('div');
+  ov.className = 'qrov';
+  ov.innerHTML = `<div class="qrcard" role="dialog" aria-label="UPI QR">
+      <div class="qrtop"><b>${esc(u.name || '')}</b><button type="button" class="x" id="qrX" aria-label="${t('Close')}">×</button></div>
+      ${amount > 0 ? `<div class="qramt">${money(amount)}</div>` : `<div class="qrhint">${t('Scan and enter the amount')}</div>`}
+      <div class="qrimg">${qrSvg(upiUri(u, amount, note))}</div>
+      <div class="qrvpa">${esc(u.vpa)}</div>
+      <div class="qrlogos">GPay · PhonePe · Paytm · BHIM</div>
+      <div class="qrnote">${t('After the money arrives in your UPI app, save the collection.')}</div></div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  $('#qrX', ov).onclick = close;
+  ov.onclick = (e) => { if (e.target === ov) close(); };
+}
+
+function renderUpiSetup() {
+  setTitle(t('My UPI'), '#/menu');
+  if (needSeller()) return;
+  const sid = S.sid, u = S.upi || {};
+  view.innerHTML = sellerBar() + `<form id="uf" class="card form">
+    <p class="muted small">${t('Customers scan this QR to pay straight into your own UPI account. Find your UPI ID in GPay / PhonePe / Paytm (profile).')}</p>
+    <label>${t('UPI ID')}<input name="vpa" value="${esc(u.vpa || '')}" placeholder="name@okaxis" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
+    <label>${t('Name shown to the customer')}<input name="nm" value="${esc(u.name || S.profile?.name || '')}" required></label>
+    <button class="btn primary" type="submit">${t('Save')}</button>
+    ${u.vpa ? `<button class="btn" type="button" id="preview">📲 ${t('Show my QR')}</button>` : ''}</form>
+    <p class="muted small">${t('Test once: scan it from another phone and send ₹1.')}</p>`;
+  bindSellerBar();
+  const pv = $('#preview'); if (pv) pv.onclick = () => showUpiQr();
+  $('#uf').onsubmit = (e) => {
+    e.preventDefault();
+    const vpa = e.target.vpa.value.trim().replace(/\s+/g, ''), name = e.target.nm.value.trim();
+    if (!VPA_RE.test(vpa)) return toast(t('That does not look like a UPI ID (example: name@okaxis)'), true);
+    const b = F.writeBatch(F.db);
+    b.set(F.sellerDoc(sid, 'meta', 'upi'), { vpa, name, updatedAt: Date.now(), by: S.user.uid });
+    F.audit(b, S.user.uid, 'upi', `sellers/${sid}/meta/upi`, S.upi || null, { vpa, name });
+    F.commit(b, onWriteError); S.upi = { vpa, name };
+    toast(t('Saved')); renderUpiSetup();
+  };
 }
 
 // ---------- day-end closing ----------
