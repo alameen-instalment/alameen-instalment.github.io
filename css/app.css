@@ -433,3 +433,17 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .qrchips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin: 6px 0 2px; }
 .qrchip { border: 1px solid #bbb; background: #f4f4f4; color: #111; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 600; }
 .qrchip.on { background: #0F5C45; border-color: #0F5C45; color: #fff; }
+/* v28: report tabs and charts */
+.reptabs { margin: 0 0 10px; }
+.reptabs span { font-size: 13px; padding-left: 4px; padding-right: 4px; }
+.bars { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.bar { display: grid; grid-template-columns: 64px 1fr auto; align-items: center; gap: 8px; font-size: 12px; }
+.bar span { color: var(--muted); white-space: nowrap; }
+.bar i { display: block; height: 12px; min-width: 2px; background: var(--accent); border-radius: 6px; }
+.bar b { font-size: 12px; min-width: 64px; text-align: right; }
+.up { color: #1E9E5A; font-size: 12px; margin-left: 6px; } .down { color: #D2453A; font-size: 12px; margin-left: 6px; }
+.rep tr.risk td { color: #D2453A; font-weight: 700; }
+.routecard .kv { margin: 3px 0; }
+.meter { height: 8px; background: var(--line); border-radius: 6px; overflow: hidden; margin-top: 8px; }
+.meter i { display: block; height: 100%; background: var(--accent); }
+.amt small.bad { color: #D2453A; font-weight: 700; }

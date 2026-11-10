@@ -1260,7 +1260,7 @@ ${t('Now')}: ${money(old)}`, old ? String(old) : '');
   const expect = L.round2((Number(a.balance) || 0) + amt - old);
   if (L.round2(rp.balance) !== expect) { toast(t('Some entries are still syncing. Try again in a minute.'), true); return false; }
   if (!confirm(`${t('Opening balance')}: ${money(old)} → ${money(amt)}
-${t('Balance')}: ${money(a.balance)} → ${money(expect)}\n${t('Past collections of this account are re-counted, so its realised profit in earlier reports may change.')}`)) return false;
+${t('Balance')}: ${money(a.balance)} → ${money(expect)}`)) return false;
   const b = F.writeBatch(F.db);
   const patch = { openingBalance: amt, balance: expect, queue: rp.queue };
   if (a.status === 'closed' && expect > 0) patch.status = 'open';
@@ -1654,7 +1654,7 @@ function renderCollect(cid, aid) {
     else if (mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', id));
     const bal = L.round2(a.balance - amt - disc);
     const closeIt = a.inactive && bal === 0 && confirm(t('This inactive account is now fully paid. Close the account?'));
-    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-L.round2(amt + disc)), ...(closeIt ? { status: 'closed', ...setActive(a, true) } : {}) });
+    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-L.round2(amt + disc)), ...(closeIt ? { status: 'closed', closedOn: today(), ...setActive(a, true) } : {}) });
     F.commit(b, onWriteError);
     rescoreSoon(cid);
     const text = [`*${APP_NAME}*`, `${c.name} — ${a.name}`,
@@ -2034,75 +2034,258 @@ async function sellerData(sid, from, to) {
 }
 async function sellerFigures(sid, from, to) { return L.sellerReport(await sellerData(sid, from, to)); }
 
+// Profit figures are not shown any more (no purchase prices in the app; the margin-based estimate misled more
+// than it helped). The money logic still keeps them inside the data, so they can come back if costs are entered later.
+const REP_FIELDS = [['salesValue', 'Sales'], ['cashSales', '— Cash sales'], ['collected', 'Collected'], ['collectedCash', '— Cash'], ['collectedUpi', '— UPI'], ['collectedScrap', '— Scrap'],
+  ['discount', 'Discounts given'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'], ['cashInHand', 'Cash in hand']];
+const repRowCls = (k) => (k === 'cashInHand' ? 'cash' : /Cash$|Upi$|Scrap$|^cashSales$/.test(k) ? 'sub' : '');
+const repLbl = (l) => (l === '— Cash' ? '— ' + t('Cash') : l === '— Scrap' ? '— ' + t('Scrap') : l === '— Cash sales' ? '— ' + t('Cash sales') : t(l));
+const shiftDate = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5);
+const weekdayOf = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
+const msOfDate = (d, end = false) => new Date(`${d}T${end ? '23:59:59.999' : '00:00:00'}`).getTime();
+const BAND_UI = { good: ['🟢', 'Good'], ok: ['🟡', 'Average'], risk: ['🔴', 'Risk'], new: ['⚪', 'New'] };
+const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
+
+/** Collections per day (or per month for long ranges) as simple horizontal bars, plus the previous period. */
+function collectionBars(cols, from, to, prevTotal, prevFrom, prevTo) {
+  const len = daysBetween(from, to) + 1, monthly = len > 62;
+  const keys = [];
+  if (monthly) { for (let m = from.slice(0, 7); m <= to.slice(0, 7); m = shiftDate(m + '-01', 32).slice(0, 7)) keys.push(m); }
+  else for (let d = from; d <= to; d = shiftDate(d, 1)) keys.push(d);
+  const by = {};
+  keys.forEach((k) => (by[k] = []));
+  cols.forEach((c) => { const k = monthly ? c.date.slice(0, 7) : c.date; if (by[k]) by[k].push(c); });
+  const vals = keys.map((k) => L.sellerReport({ collections: by[k] }).collected), max = Math.max(1, ...vals), total = L.round2(vals.reduce((s, v) => s + v, 0));
+  const diff = L.round2(total - prevTotal), arrow = diff > 0 ? '▲' : diff < 0 ? '▼' : '';
+  const label = (k) => (monthly ? new Date(k + '-01T00:00:00').toLocaleDateString('en-IN', { month: 'short', year: '2-digit' })
+    : new Date(k + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric' }));
+  return `<h3>${t('Collection')} ${monthly ? t('by month') : t('by day')}</h3>
+    <div class="card"><div class="kv"><span>${t('Previous period')} <small>${fmtDate(prevFrom)}${prevFrom !== prevTo ? ' – ' + fmtDate(prevTo) : ''}</small></span><b>${money(prevTotal)}</b></div>
+      <div class="kv"><span>${t('This period')}</span><b>${money(total)} ${arrow ? `<span class="${diff > 0 ? 'up' : 'down'}">${arrow} ${money(Math.abs(diff))}${prevTotal > 0 ? ` (${pct(Math.abs(diff), prevTotal)}%)` : ''}</span>` : ''}</b></div>
+      ${len > 1 ? `<div class="bars">${keys.map((k, i) => `<div class="bar"><span>${label(k)}</span><i style="width:${(vals[i] / max) * 100}%${vals[i] ? '' : ';min-width:0'}"></i><b>${vals[i] ? money(vals[i]) : '–'}</b></div>`).join('')}</div>` : ''}</div>`;
+}
+
+/** Growth in the period: new customers, sales, accounts closed. */
+const growthHtml = (g) => `<h3>${t('Growth')}</h3><table class="rep">
+  <tr><td>${t('New customers')}</td><td>${g.newCustomers}</td></tr>
+  <tr><td>${t('New sales')}</td><td>${g.sales}</td></tr>
+  <tr class="sub"><td>— ${t('Cash sales')}</td><td>${g.cashSales}</td></tr>
+  <tr><td>${t('Accounts closed (fully paid)')}</td><td>${g.closed}</td></tr></table>`;
+const growthOf = (customers, accounts, sales, from, to) => ({
+  newCustomers: customers.filter((c) => c.createdAt >= msOfDate(from) && c.createdAt <= msOfDate(to, true)).length,
+  sales: sales.filter((s) => !s.cash).length, cashSales: sales.filter((s) => s.cash).length,
+  closed: accounts.filter((a) => a.status === 'closed' && a.closedOn >= from && a.closedOn <= to).length,
+});
+
+/** A seller's customers and accounts: live for the book on screen, read once for the others (admin). */
+async function bookSnapshot(key) {
+  if (key === S.sid) return { customers: Object.values(S.customers), accounts: Object.values(S.accounts) };
+  const [customers, accounts] = await Promise.all([F.fetchAll(F.sellerCol(key, 'customers')), F.fetchAll(F.sellerCol(key, 'accounts'))]);
+  return { customers, accounts };
+}
+
+/** Money still to collect, split by frequency and score, and how long each open account has gone without paying.
+ *  Only the last 90 days of collections are read (keeps reads low): older or never = "90+ days". */
+function outstandingOf(snap, recent, seller = '') {
+  const cust = Object.fromEntries(snap.customers.map((c) => [c.id, c])), cutoff = shiftDate(today(), -90), last = {};
+  recent.forEach((c) => { if (!c.accountId || c.kind === 'discount' || c.kind === 'refund') return; if (!last[c.accountId] || c.date > last[c.accountId]) last[c.accountId] = c.date; });
+  const r = { total: 0, n: 0, byFreq: { daily: 0, weekly: 0, monthly: 0 }, byBand: { good: 0, ok: 0, risk: 0, new: 0 }, paused: 0, pausedN: 0, rows: [] };
+  for (const a of snap.accounts) {
+    if (a.status === 'closed' || !(a.balance > 0.004)) continue;
+    const c = cust[a.customerId]; if (!c) continue;
+    r.total += a.balance; r.n++;
+    r.byFreq[a.frequency || 'weekly'] = (r.byFreq[a.frequency || 'weekly'] || 0) + a.balance;
+    r.byBand[bandOf(c.score?.score)] += a.balance;
+    if (a.inactive) { r.paused += a.balance; r.pausedN++; continue; }
+    const lp = last[a.id] || '', ref = lp || (a.date && a.date >= cutoff ? a.date : '');
+    r.rows.push({ c, a, lp, days: ref ? daysBetween(ref, today()) : 91, seller });
+  }
+  return r;
+}
+function mergeOutstanding(list) {
+  const m = { total: 0, n: 0, byFreq: { daily: 0, weekly: 0, monthly: 0 }, byBand: { good: 0, ok: 0, risk: 0, new: 0 }, paused: 0, pausedN: 0, rows: [] };
+  for (const r of list) {
+    m.total += r.total; m.n += r.n; m.paused += r.paused; m.pausedN += r.pausedN; m.rows.push(...r.rows);
+    for (const k in r.byFreq) m.byFreq[k] = (m.byFreq[k] || 0) + r.byFreq[k];
+    for (const k in r.byBand) m.byBand[k] += r.byBand[k];
+  }
+  return m;
+}
+
+/** Route days: customers, money outstanding, collected and visits without payment in the period. */
+function routeStats(customers, accounts, cols, visits, from, to) {
+  const cust = Object.fromEntries(customers.map((c) => [c.id, c]));
+  const groupOf = (cid, date) => { const ds = daysOf(cust[cid]); if (!ds.length) return 'none'; const w = weekdayOf(date); return String(ds.includes(w) ? w : ds[0]); };
+  const keys = [...ROUTE_DAYS.map(String), 'none'], G = {};
+  keys.forEach((k) => (G[k] = { customers: 0, outstanding: 0, collected: [], paid: new Set(), nopay: 0, runs: 0 }));
+  customers.forEach((c) => { const ds = daysOf(c); (ds.length ? ds.map(String) : ['none']).forEach((k) => { if (G[k]) G[k].customers++; }); });
+  accounts.forEach((a) => { if (a.status === 'closed' || !(a.balance > 0) || !cust[a.customerId]) return; const ds = daysOf(cust[a.customerId]); const k = ds.length ? String(ds[0]) : 'none'; if (G[k]) G[k].outstanding += a.balance; });
+  const paidOn = new Set();
+  cols.forEach((c) => { if (!c.customerId || c.cash || c.kind === 'discount' || c.kind === 'refund' || !cust[c.customerId]) return; const g = G[groupOf(c.customerId, c.date)]; if (!g) return; g.collected.push(c); g.paid.add(c.customerId); paidOn.add(c.customerId + c.date); });
+  const seenV = new Set();
+  visits.forEach((v) => { if (!cust[v.customerId] || paidOn.has(v.customerId + v.date) || seenV.has(v.customerId + v.date)) return; seenV.add(v.customerId + v.date); const g = G[groupOf(v.customerId, v.date)]; if (g) g.nopay++; });
+  for (let d = from; d <= to; d = shiftDate(d, 1)) { const k = String(weekdayOf(d)); if (G[k]) G[k].runs++; }
+  return keys.map((k) => ({ key: k, label: k === 'none' ? t('No day') : dayLabel(Number(k)), ...G[k], collectedAmt: L.sellerReport({ collections: G[k].collected }).collected }));
+}
+
+/** Expenses by type (personal or company), split cash / UPI. */
+function expenseTable(list, title) {
+  const by = {};
+  list.forEach((x) => { const k = x.category || 'Other'; by[k] ||= { cash: 0, upi: 0 }; by[k][x.mode === 'upi' ? 'upi' : 'cash'] += Number(x.amount) || 0; });
+  const rows = Object.entries(by).sort((a, b) => (b[1].cash + b[1].upi) - (a[1].cash + a[1].upi));
+  const tot = rows.reduce((s, [, v]) => s + v.cash + v.upi, 0);
+  return `<h3>${esc(title)}</h3>${rows.length ? `<table class="rep"><thead><tr><th>${t('Type')}</th><th>${t('Cash')}</th><th>UPI</th><th>${t('Total')}</th></tr></thead><tbody>
+    ${rows.map(([k, v]) => `<tr><td>${esc(t(k))}<small>${pct(v.cash + v.upi, tot)}%</small></td><td>${money(L.round2(v.cash))}</td><td>${money(L.round2(v.upi))}</td><td><b>${money(L.round2(v.cash + v.upi))}</b></td></tr>`).join('')}
+    <tr class="cash"><td>${t('Total')}</td><td></td><td></td><td>${money(L.round2(tot))}</td></tr></tbody></table>` : `<p class="muted">${t('No expenses in this period')}</p>`}`;
+}
+
 async function renderReport() {
   setTitle(t('Reports'));
   let st = (() => { try { return JSON.parse(sessionStorage.getItem('rep') || 'null'); } catch { return null; } })() || { mode: 'today' };
+  st.tab ||= 'sum';
   const rangeOf = (m) => { const d = today(); return m === 'week' ? [L.weekStart(d), d] : m === 'month' ? [d.slice(0, 8) + '01', d] : m === 'year' ? [d.slice(0, 5) + '01-01', d] : [d, d]; };
   if (st.mode !== 'custom') [st.from, st.to] = rangeOf(st.mode);
   const chips = [['today', 'Today'], ['week', 'This week'], ['month', 'This month'], ['year', 'This year'], ['custom', 'Choose dates']];
-  view.innerHTML = `<div class="fchips" id="rchips">${chips.map(([k, l]) => `<button class="fchip ${st.mode === k ? 'on' : ''}" data-r="${k}">${k === 'custom' ? '📅 ' : ''}${t(l)}</button>`).join('')}</div>
+  const tabs = [['sum', 'Summary'], ['out', 'Outstanding'], ['route', 'Routes'], ['exp', 'Expenses']];
+  view.innerHTML = `<div class="seg reptabs" id="rtabs">${tabs.map(([k, l]) => `<label><input type="radio" name="rtab" value="${k}" ${st.tab === k ? 'checked' : ''}><span>${t(l)}</span></label>`).join('')}</div>
+    <div id="rdates"><div class="fchips" id="rchips">${chips.map(([k, l]) => `<button class="fchip ${st.mode === k ? 'on' : ''}" data-r="${k}">${k === 'custom' ? '📅 ' : ''}${t(l)}</button>`).join('')}</div>
     <div class="card form" id="rcust" ${st.mode === 'custom' ? '' : 'hidden'}><div class="two">
       <label>${t('From')}<input type="date" id="rf" value="${st.from}"></label><label>${t('To')}<input type="date" id="rt" value="${st.to}"></label></div></div>
-    <div class="banner" id="rrange" style="padding:8px 14px"></div>
+    <div class="banner" id="rrange" style="padding:8px 14px"></div></div>
     <div id="out"></div>`;
+  let runId = 0;
   const run = async () => {
+    const my = ++runId, live = () => my === runId && $('#out');
     const from = st.mode === 'custom' ? $('#rf').value || today() : st.from, to = st.mode === 'custom' ? $('#rt').value || today() : st.to;
     try { sessionStorage.setItem('rep', JSON.stringify({ ...st, from, to })); } catch {}
+    $('#rdates').hidden = st.tab === 'out';
     $('#rrange').innerHTML = `<b>${fmtDate(from)}${from !== to ? ' – ' + fmtDate(to) : ''}</b>`;
     $('#out').innerHTML = '<div class="loading">…</div>';
-    const fields = [['salesValue', 'Sales'], ['cashSales', '— Cash sales'], ['collected', 'Collected'], ['collectedCash', '— Cash'], ['collectedUpi', '— UPI'], ['collectedScrap', '— Scrap'],
-      ['discount', 'Discounts given'], ['booked', 'Booked profit'], ['realised', 'Realised profit'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'],
-      ['cashInHand', 'Cash in hand'], ['net', 'Net']];
-    const rowCls = (k) => (k === 'net' ? 'net' : k === 'cashInHand' ? 'cash' : /Cash$|Upi$|Scrap$|^cashSales$/.test(k) ? 'sub' : '');
-    const lbl = (l) => (l === '— Cash' ? '— ' + t('Cash') : l === '— Scrap' ? '— ' + t('Scrap') : l === '— Cash sales' ? '— ' + t('Cash sales') : t(l));
-    if (!isAdmin()) {
-      const [me] = L.holderPeriods([{ ...S.profile, uid: S.user.uid }], from, to);
-      const r = me ? await sellerFigures(S.sid, me.from, me.to) : L.sellerReport({});
-      $('#out').innerHTML = `<table class="rep">${fields.map(([k, l]) => `<tr class="${rowCls(k)}"><td>${lbl(l)}</td><td>${money(r[k])}</td></tr>`).join('')}</table>
+    const len = daysBetween(from, to) + 1, pFrom = shiftDate(from, -len), pTo = shiftDate(from, -1);
+    const prevCollected = async (key, a, b) => L.sellerReport({ collections: await F.fetchAll(F.query(F.sellerCol(key, 'collections'), F.where('date', '>=', a), F.where('date', '<=', b))) }).collected;
+    const admin = isAdmin();
+    const ss = admin ? L.holderPeriods(Object.entries(S.users).map(([uid, u]) => ({ ...u, uid })), from, to) : [];
+    const me = admin ? null : L.holderPeriods([{ ...S.profile, uid: S.user.uid }], from, to)[0];
+
+    if (st.tab === 'sum') {
+      if (!admin) {
+        const d = me ? await sellerData(S.sid, me.from, me.to) : { sales: [], collections: [], returns: [], expenses: [] };
+        const r = L.sellerReport(d), prev = await prevCollected(S.sid, pFrom, pTo);
+        if (!live()) return;
+        $('#out').innerHTML = `<table class="rep">${REP_FIELDS.map(([k, l]) => `<tr class="${repRowCls(k)}"><td>${repLbl(l)}</td><td>${money(r[k])}</td></tr>`).join('')}</table>
+          ${collectionBars(d.collections, from, to, prev, pFrom, pTo)}
+          ${growthHtml(growthOf(Object.values(S.customers), Object.values(S.accounts), d.sales, from, to))}
+          <button class="btn" id="pdf">PDF</button>`;
+        $('#pdf').onclick = () => makePdf({ title: `Report - ${S.profile.name}`, subtitle: `${fmtDate(from)} to ${fmtDate(to)}`, head: ['Item', 'Amount'], rows: REP_FIELDS.map(([k, l]) => [l, pdfMoney(r[k])]), file: `report-${S.profile.username}-${from}-${to}.pdf` });
+        return;
+      }
+      const raws = await Promise.all(ss.map((p) => sellerData(p.key, p.from, p.to)));
+      const reps = raws.map((r) => L.sellerReport(r));
+      const rng = (c) => F.fetchAll(F.query(F.collection(F.db, c), F.where('date', '>=', from), F.where('date', '<=', to)));
+      const keys = [...new Set(ss.map((p) => p.key))];
+      const inRange = (k) => [F.where('createdAt', '>=', msOfDate(from)), F.where('createdAt', '<=', msOfDate(to, true))];
+      const [cexp, scrap, ssales, prevs, newCust, closedAcc] = await Promise.all([rng('companyExpenses'), rng('scrapLosses'), rng('scrapSales'),
+        Promise.all(keys.map((k) => prevCollected(k, pFrom, pTo))),
+        Promise.all(keys.map((k) => F.fetchAll(F.query(F.sellerCol(k, 'customers'), ...inRange(k))))),
+        Promise.all(keys.map((k) => F.fetchAll(F.query(F.sellerCol(k, 'accounts'), F.where('closedOn', '>=', from), F.where('closedOn', '<=', to)))))]);
+      if (!live()) return;
+      const co = L.companyReport(reps, cexp, scrap, ssales);
+      const allCols = raws.flatMap((r) => r.collections), allSales = raws.flatMap((r) => r.sales);
+      const g = growthOf(newCust.flat(), closedAcc.flat().map((a) => ({ ...a, status: 'closed' })), allSales, from, to);
+      $('#out').innerHTML = `<div class="scroll"><table class="rep"><thead><tr><th></th>${ss.map((p) => `<th>${esc(p.name)}${p.from !== from || p.to !== to ? `<small>${fmtDate(p.from)} – ${fmtDate(p.to)}</small>` : ''}</th>`).join('')}</tr></thead>
+        <tbody>${REP_FIELDS.map(([k, l]) => `<tr class="${repRowCls(k)}"><td>${repLbl(l)}</td>${reps.map((r) => `<td>${money(r[k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <h3>${t('Company')}</h3><table class="rep">
+        <tr><td>${t('Sales')}</td><td>${money(co.salesValue)}</td></tr>
+        <tr><td>${t('Collected')}</td><td>${money(co.collected)}</td></tr>
+        <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.collectedCash)}</td></tr>
+        <tr class="sub"><td>— UPI</td><td>${money(co.collectedUpi)}</td></tr>
+        <tr class="sub"><td>— ${t('Scrap')}</td><td>${money(co.collectedScrap)}</td></tr>
+        <tr><td>${t('Discounts given')}</td><td>${money(co.discount)}</td></tr>
+        <tr><td>${t('Personal expenses')}</td><td>− ${money(co.personalExpense)}</td></tr>
+        <tr><td>${t('Company expenses')}</td><td>− ${money(co.companyExpense)}</td></tr>
+        <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.companyExpenseCash)}</td></tr>
+        <tr class="sub"><td>— UPI</td><td>${money(co.companyExpenseUpi)}</td></tr>
+        ${ssales.length ? `<tr><td>${t('Scrap sold')}<small>${t('credited value')} ${money(co.scrapSoldCredited)}</small></td><td>${money(co.scrapSold)}</td></tr>
+        <tr class="sub"><td>${co.scrapGain >= 0 ? t('Scrap gain') : t('Scrap loss')}</td><td>${co.scrapGain >= 0 ? '+' : '−'} ${money(Math.abs(co.scrapGain))}</td></tr>` : ''}
+        <tr class="cash"><td>${t('Cash in hand')}</td><td>${money(co.cashInHand)}</td></tr></table>
+        <p class="muted small">${t('Cash in hand = cash collected − expenses paid in cash + money from scrap sold. Scrap taken as payment is not cash until it is sold.')}</p>
+        ${collectionBars(allCols, from, to, L.round2(prevs.reduce((s, v) => s + v, 0)), pFrom, pTo)}
+        ${growthHtml(g)}
         <button class="btn" id="pdf">PDF</button>`;
-      $('#pdf').onclick = () => makePdf({ title: `Report - ${S.profile.name}`, subtitle: `${fmtDate(from)} to ${fmtDate(to)}`, head: ['Item', 'Amount'], rows: fields.map(([k, l]) => [l, pdfMoney(r[k])]), file: `report-${S.profile.username}-${from}-${to}.pdf` });
+      $('#pdf').onclick = () => makePdf({
+        title: 'Company report', subtitle: `${fmtDate(from)} to ${fmtDate(to)}`,
+        head: ['Item', ...ss.map((s) => s.name)], rows: REP_FIELDS.map(([k, l]) => [l, ...reps.map((r) => pdfMoney(r[k]))]),
+        foot: [`Collected: Cash ${pdfMoney(co.collectedCash)} | UPI ${pdfMoney(co.collectedUpi)} | Scrap ${pdfMoney(co.collectedScrap)}`, `Company expenses: ${pdfMoney(co.companyExpense)} (Cash ${pdfMoney(co.companyExpenseCash)} | UPI ${pdfMoney(co.companyExpenseUpi)})`,
+          `Scrap sold: ${pdfMoney(co.scrapSold)} (credited ${pdfMoney(co.scrapSoldCredited)}, gain ${pdfMoney(co.scrapGain)})`, `Cash in hand: ${pdfMoney(co.cashInHand)}`],
+        file: `company-report-${from}-${to}.pdf`,
+      });
       return;
     }
-    const ss = L.holderPeriods(Object.entries(S.users).map(([uid, u]) => ({ ...u, uid })), from, to);
+
+    if (st.tab === 'out') {
+      const sellersNow = admin ? L.holderPeriods(Object.entries(S.users).map(([uid, u]) => ({ ...u, uid })), today(), today()) : [{ key: S.sid, name: S.profile.name }];
+      const cut = shiftDate(today(), -90);
+      const parts = await Promise.all(sellersNow.map(async (p) => {
+        const [snap, recent] = await Promise.all([bookSnapshot(p.key), F.fetchAll(F.query(F.sellerCol(p.key, 'collections'), F.where('date', '>=', cut)))]);
+        return { p, r: outstandingOf(snap, recent, p.key) };
+      }));
+      if (!live()) return;
+      const m = mergeOutstanding(parts.map((x) => x.r)), nameOf = Object.fromEntries(sellersNow.map((p) => [p.key, p.name]));
+      let min = Number(st.od) || 30;
+      const draw = () => {
+        const rows = m.rows.filter((x) => x.days >= min).sort((a, b) => (b.days - a.days) || (b.a.balance - a.a.balance));
+        const sum = L.round2(rows.reduce((s, x) => s + x.a.balance, 0));
+        $('#out').innerHTML = `
+          <div class="card balance"><span>${t('Total to collect')} · ${m.n} ${t('accounts')}</span><b>${money(L.round2(m.total))}</b></div>
+          ${admin && parts.length > 1 ? `<table class="rep">${parts.map(({ p, r }) => `<tr><td>${esc(p.name)}<small>${r.n} ${t('accounts')}</small></td><td>${money(L.round2(r.total))}</td></tr>`).join('')}</table>` : ''}
+          <h3>${t('By instalment')}</h3><table class="rep">${FREQ.map((f) => `<tr><td>${freqLabel(f)}</td><td>${money(L.round2(m.byFreq[f] || 0))}</td></tr>`).join('')}</table>
+          <h3>${t('By score')}</h3><table class="rep">${Object.entries(BAND_UI).map(([k, [ic, l]]) => `<tr class="${k === 'risk' ? 'risk' : ''}"><td>${ic} ${t(l)}<small>${pct(m.byBand[k], m.total)}%</small></td><td>${money(L.round2(m.byBand[k]))}</td></tr>`).join('')}</table>
+          ${m.pausedN ? `<p class="muted small">⏸ ${t('Inactive accounts')}: ${money(L.round2(m.paused))} (${m.pausedN}) — ${t('included in the total, not in the overdue list.')}</p>` : ''}
+          <h3>${t('Not paid for')}</h3>
+          <div class="fchips">${[14, 30, 60, 90].map((d) => `<button class="fchip ${d === min ? 'on' : ''}" data-od="${d}">${d}+ ${t('days')}</button>`).join('')}</div>
+          <div class="card"><div class="kv"><span>${rows.length} ${t('accounts')}</span><b>${money(sum)}</b></div></div>
+          <ul class="list">${rows.map((x) => { const own = x.seller === S.sid; const inner = `<div>${placeBadge(x.c)}<b>${esc(x.c.name)}</b>${scoreBadges(x.c)}<small>${admin ? esc(nameOf[x.seller] || '') + ' · ' : ''}${esc(x.a.name)} · ${freqLabel(x.a.frequency)} · ${t('Last paid')}: ${x.lp ? fmtDate(x.lp) : '—'}</small></div>
+              <div class="amt">${money(x.a.balance)}<small class="${x.days >= 60 ? 'bad' : ''}">${x.days > 90 ? '90+' : x.days} ${t('days')}</small></div>`;
+            return `<li>${own ? `<a class="row" href="#/account/${x.c.id}/${x.a.id}">${inner}</a>` : `<div class="row">${inner}</div>`}</li>`; }).join('') || `<li class="muted">${t('Nobody in this list')} 👍</li>`}</ul>
+          <p class="muted small">${t('Days since the last payment (or since the account was opened). Payments older than 90 days are not read, so they show as 90+.')}</p>`;
+        $$('[data-od]').forEach((b) => (b.onclick = () => { min = Number(b.dataset.od); st.od = min; try { sessionStorage.setItem('rep', JSON.stringify(st)); } catch {} draw(); }));
+      };
+      draw();
+      return;
+    }
+
+    if (st.tab === 'route') {
+      if (!S.sid) { $('#out').innerHTML = sellerBar() + `<div class="empty">${t('Choose a seller above to see their customers.')}</div>`; bindSellerBar(); return; } // admin: the seller chosen in the bar
+      const [cols, visits] = await Promise.all(['collections', 'visits'].map((c) => F.fetchAll(F.query(F.sellerCol(S.sid, c), F.where('date', '>=', from), F.where('date', '<=', to)))));
+      if (!live()) return;
+      const rs = routeStats(Object.values(S.customers), Object.values(S.accounts), cols, visits, from, to).filter((g) => g.customers || g.collectedAmt);
+      $('#out').innerHTML = sellerBar() + `${rs.map((g) => `<div class="card routecard">
+          <div class="kv"><b>${esc(g.label)} · ${g.customers} ${t('customers')}</b><span>${t('To collect')} <b>${money(L.round2(g.outstanding))}</b></span></div>
+          <div class="kv"><span>${t('Collected')}${g.key !== 'none' ? ` · ${g.runs} ${g.runs === 1 ? t('day') : t('days')}` : ''}</span><b>${money(g.collectedAmt)}</b></div>
+          ${g.key !== 'none' && g.runs ? `<div class="kv small"><span>${t('Average per route day')}</span><span>${money(Math.round(g.collectedAmt / g.runs))}</span></div>` : ''}
+          <div class="kv small"><span>✓ ${t('Paid')}: ${g.paid.size} ${t('people')}</span><span>⊘ ${t('Visited – no payment')}: ${g.nopay}</span></div>
+          ${g.customers ? `<div class="meter"><i style="width:${pct(g.paid.size, g.customers)}%"></i></div><div class="small muted">${pct(g.paid.size, g.customers)}% ${t('of customers paid at least once')}</div>` : ''}</div>`).join('') || `<p class="muted">${t('No customers yet')}</p>`}
+        <p class="muted small">${t('A customer on two route days is counted on both; money is counted on the day it was collected.')}</p>`;
+      bindSellerBar();
+      return;
+    }
+
+    // expenses
+    if (!admin) {
+      const d = me ? await sellerData(S.sid, me.from, me.to) : { expenses: [] };
+      if (!live()) return;
+      $('#out').innerHTML = expenseTable(d.expenses, t('Personal expenses'));
+      return;
+    }
     const raws = await Promise.all(ss.map((p) => sellerData(p.key, p.from, p.to)));
-    const reps = raws.map((r) => L.sellerReport(r));
-    const rng = (c) => F.fetchAll(F.query(F.collection(F.db, c), F.where('date', '>=', from), F.where('date', '<=', to)));
-    const [cexp, scrap, ssales] = await Promise.all([rng('companyExpenses'), rng('scrapLosses'), rng('scrapSales')]);
-    const co = L.companyReport(reps, cexp, scrap, ssales);
-    $('#out').innerHTML = `<div class="scroll"><table class="rep"><thead><tr><th></th>${ss.map((p) => `<th>${esc(p.name)}${p.from !== from || p.to !== to ? `<small>${fmtDate(p.from)} – ${fmtDate(p.to)}</small>` : ''}</th>`).join('')}</tr></thead>
-      <tbody>${fields.map(([k, l]) => `<tr class="${rowCls(k)}"><td>${lbl(l)}</td>${reps.map((r) => `<td>${money(r[k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-      <h3>${t('Company')}</h3><table class="rep">
-      <tr><td>${t('Sales')}</td><td>${money(co.salesValue)}</td></tr>
-      <tr><td>${t('Collected')}</td><td>${money(co.collected)}</td></tr>
-      <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.collectedCash)}</td></tr>
-      <tr class="sub"><td>— UPI</td><td>${money(co.collectedUpi)}</td></tr>
-      <tr class="sub"><td>— ${t('Scrap')}</td><td>${money(co.collectedScrap)}</td></tr>
-      <tr><td>${t('Discounts given')}</td><td>${money(co.discount)}</td></tr>
-      <tr><td>${t('Booked profit')}</td><td>${money(co.booked)}</td></tr>
-      <tr><td>${t('Realised profit')}</td><td>${money(co.realised)}</td></tr>
-      <tr><td>${t('Personal expenses')}</td><td>− ${money(co.personalExpense)}</td></tr>
-      <tr><td>${t('Company expenses')}</td><td>− ${money(co.companyExpense)}</td></tr>
-      <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.companyExpenseCash)}</td></tr>
-      <tr class="sub"><td>— UPI</td><td>${money(co.companyExpenseUpi)}</td></tr>
-      <tr><td>${t('Damage loss')}</td><td>− ${money(co.scrap)}</td></tr>
-      ${ssales.length ? `<tr><td>${t('Scrap sold')}<small>${t('credited value')} ${money(co.scrapSoldCredited)}</small></td><td>${money(co.scrapSold)}</td></tr>
-      <tr class="sub"><td>${co.scrapGain >= 0 ? t('Scrap gain') : t('Scrap loss')}</td><td>${co.scrapGain >= 0 ? '+' : '−'} ${money(Math.abs(co.scrapGain))}</td></tr>` : ''}
-      <tr class="cash"><td>${t('Cash in hand')}</td><td>${money(co.cashInHand)}</td></tr>
-      <tr class="net"><td>${t('Company net')}</td><td>${money(co.net)}</td></tr></table>
-      <p class="muted small">${t('Cash in hand = cash collected − expenses paid in cash + money from scrap sold. Scrap taken as payment is not cash until it is sold.')}</p>
-      <p class="muted small">${t('Profit figures are estimates: the cost of each sale is worked out from the margin in App settings.')}</p>
-      <button class="btn" id="pdf">PDF</button>`;
-    $('#pdf').onclick = () => makePdf({
-      title: 'Company report', subtitle: `${fmtDate(from)} to ${fmtDate(to)}`,
-      head: ['Item', ...ss.map((s) => s.name)], rows: fields.map(([k, l]) => [l, ...reps.map((r) => pdfMoney(r[k]))]),
-      foot: [`Collected: Cash ${pdfMoney(co.collectedCash)} | UPI ${pdfMoney(co.collectedUpi)} | Scrap ${pdfMoney(co.collectedScrap)}`, `Company expenses: ${pdfMoney(co.companyExpense)} (Cash ${pdfMoney(co.companyExpenseCash)} | UPI ${pdfMoney(co.companyExpenseUpi)})`,
-        `Damage loss: ${pdfMoney(co.scrap)}`, `Scrap sold: ${pdfMoney(co.scrapSold)} (credited ${pdfMoney(co.scrapSoldCredited)}, gain ${pdfMoney(co.scrapGain)})`, `Cash in hand: ${pdfMoney(co.cashInHand)}`, `Company net: ${pdfMoney(co.net)}`,
-        '', 'Profit figures are estimates (cost from the margin in App settings).'],
-      file: `company-report-${from}-${to}.pdf`,
-    });
+    const cexp = await F.fetchAll(F.query(F.collection(F.db, 'companyExpenses'), F.where('date', '>=', from), F.where('date', '<=', to)));
+    if (!live()) return;
+    $('#out').innerHTML = expenseTable(cexp, t('Company expenses')) + ss.map((p, i) => expenseTable(raws[i].expenses, `${t('Personal expenses')} · ${p.name}`)).join('');
   };
+  $$('input[name=rtab]').forEach((r) => (r.onchange = () => { st.tab = r.value; run(); }));
   $$('[data-r]').forEach((b) => (b.onclick = () => {
-    st = { mode: b.dataset.r };
+    st = { mode: b.dataset.r, tab: st.tab, od: st.od };
     if (st.mode !== 'custom') [st.from, st.to] = rangeOf(st.mode);
     $$('[data-r]').forEach((x) => x.classList.toggle('on', x === b));
     $('#rcust').hidden = st.mode !== 'custom';
@@ -2455,10 +2638,8 @@ function renderAppSettings() {
   setTitle(t('App settings'), '#/menu');
   const s = S.settings;
   view.innerHTML = `<form id="as" class="card form">
-    <label>${t('Default margin % (on cost)')}<input name="dm" type="number" step="any" min="0" value="${s.defaultMarginPct}"></label>
-    <p class="muted small">${t('Used to estimate profit: the cost of an item sold for ₹1,000 at 100% margin is taken as ₹500. Changing it affects sales entered after the change.')}</p>
-    <label>${t('Old balance margin %')}<input name="lm" type="number" step="any" value="${s.legacyMarginPct}"></label>
-    <p class="muted small">${t('Changing the old balance margin affects accounts created after the change.')}</p>
+    <!-- Margins only feed the (hidden) profit estimate; kept as they are, not shown. -->
+    <input name="dm" type="hidden" value="${s.defaultMarginPct}"><input name="lm" type="hidden" value="${s.legacyMarginPct}">
     <label>${t("Admin's WhatsApp number (for day-end summaries)")}<input name="aw" type="tel" inputmode="tel" value="${esc(s.adminWa || '')}"></label>
     <button class="btn primary" type="submit">${t('Save')}</button></form>
     <div class="card form" style="border-color:var(--bad)">
