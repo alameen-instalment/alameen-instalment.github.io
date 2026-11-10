@@ -52,6 +52,38 @@ const phoneRowHtml = (p = {}, i = 0) => `<div class="phonerow">
   <input name="pn" type="tel" inputmode="tel" placeholder="${t('Number')}" value="${esc(p.number || '')}">
   <label class="star" title="${t('Default')}"><input type="radio" name="pdef" value="${i}" ${p.primary ? 'checked' : ''}><span>★</span></label>
   <button type="button" class="x" data-prm>×</button></div>`;
+// Contact Picker (Chrome on Android): the person picks one contact; the app never reads the whole list.
+const canPickContact = () => 'contacts' in navigator && typeof navigator.contacts?.select === 'function';
+/** Indian mobile numbers as 10 digits (drops +91 / 91 / 0, spaces and dashes); other numbers kept as typed digits. */
+function cleanPhone(raw) {
+  const s = String(raw || '').trim(), d = s.replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+  if (d.length === 11 && d.startsWith('0')) return d.slice(1);
+  if (d.length === 10) return d;
+  return (s.startsWith('+') ? '+' : '') + d;
+}
+async function pickContact() {
+  try {
+    const [c] = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+    if (!c) return null;
+    const numbers = [...new Set((c.tel || []).map(cleanPhone).filter((n) => n.replace(/\D/g, '').length >= 6))];
+    return { name: String((c.name || [])[0] || '').trim(), numbers };
+  } catch (e) { if (e?.name !== 'AbortError' && e?.name !== 'InvalidStateError') toast(t('Could not open contacts'), true); return null; }
+}
+/** Small in-page chooser (no browser popup). Resolves to the index picked, or null on cancel. */
+function askChoice(title, options) {
+  return new Promise((done) => {
+    const ov = document.createElement('div');
+    ov.className = 'qrov';
+    ov.innerHTML = `<div class="card choice" role="dialog"><b>${esc(title)}</b>
+      ${options.map((o, i) => `<button type="button" class="btn" data-ch="${i}">📞 ${esc(o)}</button>`).join('')}
+      <button type="button" class="btn ghost" data-ch="x">${t('Cancel')}</button></div>`;
+    document.body.appendChild(ov);
+    const end = (v) => { ov.remove(); done(v); };
+    $$('[data-ch]', ov).forEach((b) => (b.onclick = () => end(b.dataset.ch === 'x' ? null : Number(b.dataset.ch))));
+    ov.onclick = (e) => { if (e.target === ov) end(null); };
+  });
+}
 const modeLabel = (m) => (m === 'upi' ? 'UPI' : m === 'scrap' ? t('Scrap') : t('Cash'));
 const MODE_ICON = { cash: '💵', upi: '📱', scrap: '♻️' };
 const MODE_EN = { cash: 'Cash', upi: 'UPI', scrap: 'Scrap' };
@@ -846,7 +878,7 @@ function renderCustomerForm(id) {
     <div id="phones">${(phonesOf(c).length ? phonesOf(c) : [{ primary: true }]).map((p, i) => phoneRowHtml(p, i)).join('')}</div>
     <div id="dupWarn"></div>
     <datalist id="plabels">${PHONE_LABELS.map((l) => `<option value="${t(l)}">`).join('')}</datalist>
-    <button type="button" class="btn ghost small" id="addPhone">+ ${t('Another number')}</button>
+    <div class="contact"><button type="button" class="btn ghost small" id="addPhone">+ ${t('Another number')}</button>${canPickContact() ? `<button type="button" class="btn ghost small" id="fromContacts">📇 ${t('From contacts')}</button>` : ''}</div>
     <label>${t('Address')}<textarea name="address" rows="2">${esc(c?.address)}</textarea></label>
     <label>${t('Route day')}</label>${dayPicker(daysOf(c))}
     ${c ? '' : `<h3>${t('Accounts')}</h3><div id="accs">${accountRowHtml(0)}</div>
@@ -882,6 +914,28 @@ function renderCustomerForm(id) {
     $$('.phonerow [name=pn]').forEach((i) => (i.onchange = checkPhones));
   };
   $('#addPhone').onclick = () => { $('#phones').insertAdjacentHTML('beforeend', phoneRowHtml({}, pn++)); bindPhones(); };
+  const fc = $('#fromContacts');
+  if (fc) fc.onclick = async () => {
+    const got = await pickContact(); if (!got) return;
+    const f = $('#cf');
+    if (got.name && !f.name.value.trim()) f.name.value = got.name;
+    if (!got.numbers.length) return toast(t('This contact has no phone number'), true);
+    const have = new Set($$('.phonerow [name=pn]').map((i) => last10(i.value)).filter(Boolean));
+    const fresh = got.numbers.filter((n) => !have.has(last10(n)));
+    if (!fresh.length) return toast(t('These numbers are already added'));
+    let def = null; // ask only when the contact brings two or more numbers
+    if (fresh.length > 1) { def = await askChoice(t('Which number should be the default?'), fresh); if (def == null) return; }
+    const rows = () => $$('.phonerow');
+    for (const n of fresh) {
+      const empty = rows().find((r) => !$('[name=pn]', r).value.trim());
+      let row = empty;
+      if (!row) { $('#phones').insertAdjacentHTML('beforeend', phoneRowHtml({}, pn++)); row = rows().at(-1); }
+      $('[name=pn]', row).value = n;
+      if (def != null && n === fresh[def]) $('[name=pdef]', row).checked = true;
+    }
+    if (!$('input[name=pdef]:checked')) $('[name=pdef]', rows()[0]).checked = true;
+    bindPhones(); checkPhones();
+  };
   bindPhones();
   checkPhones();
   $('#cf').onsubmit = async (e) => {
@@ -1267,7 +1321,11 @@ async function renderAccount(cid, aid) {
         ${r.type === 'sale' && isAdmin() ? `<button class="void" data-void="${r.ref.id}">${t('Void')}</button>` : ''}</td>
         <td>${r.sign > 0 ? money(r.amount) : ''}</td><td>${r.sign < 0 ? money(r.amount) : ''}</td><td>${money(r.balance)}</td></tr>`).join('')}
       </tbody></table>
-      <div class="actions">${a.status !== 'closed' ? (a.inactive
+      <form id="aef" class="card form edbox" hidden>
+        <label>${t('Account name')}<input name="an" value="${esc(a.name)}" required maxlength="40"></label>
+        <label>${t('Instalment')}<select name="af">${FREQ.map((f) => `<option value="${f}" ${f === (a.frequency || 'weekly') ? 'selected' : ''}>${freqLabel(f)}</option>`).join('')}</select></label>
+        <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" id="aefX">${t('Cancel')}</button></div></form>
+      <div class="actions"><button class="btn" id="accEd">✏️ ${t('Edit account')}</button>${a.status !== 'closed' ? (a.inactive
         ? `<button class="btn" id="actTgl">▶ ${t('Make active')}</button>`
         : `<button class="btn" id="actTgl">⏸ ${t('Make inactive')}</button>`) : ''}${a.status === 'closed'
         ? `<button class="btn" id="reopen">${t('Reopen account')}</button>`
@@ -1286,6 +1344,23 @@ async function renderAccount(cid, aid) {
       const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), patch);
       F.audit(b, S.user.uid, on ? 'account-inactive' : 'account-active', `sellers/${sid}/accounts/${aid}`, null, patch);
       F.commit(b, onWriteError); Object.assign(a, patch); rescoreSoon(cid); draw();
+    };
+    const aef = $('#aef');
+    $('#accEd').onclick = () => { aef.hidden = !aef.hidden; if (!aef.hidden) { aef.scrollIntoView({ block: 'center' }); aef.an.focus(); } };
+    $('#aefX').onclick = () => { aef.hidden = true; };
+    aef.onsubmit = (e) => {
+      e.preventDefault();
+      const name = aef.an.value.trim(), frequency = aef.af.value;
+      if (!name) return toast(t('Enter the account name'), true);
+      const patch = {};
+      if (name !== a.name) patch.name = name;
+      if (frequency !== (a.frequency || 'weekly')) patch.frequency = frequency;
+      if (!Object.keys(patch).length) { aef.hidden = true; return; }
+      const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), patch);
+      F.audit(b, S.user.uid, 'account-edit', `sellers/${sid}/accounts/${aid}`, { name: a.name, frequency: a.frequency || 'weekly' }, patch);
+      F.commit(b, onWriteError); Object.assign(a, patch);
+      if (patch.frequency) rescoreSoon(cid); // the score's allowed delay depends on daily / weekly / monthly
+      toast(t('Saved')); draw();
     };
     $('#obal').onclick = () => editOpening(sid, cid, aid).then((ok) => ok && setTimeout(draw, 300));
     $('#waStmt').onclick = () => window.open(`https://wa.me/${L.waNumber(c.phone)}?text=${encodeURIComponent(stmtText())}`, '_blank');
@@ -1463,7 +1538,7 @@ function renderSale(cid, aid) {
       b.update(F.sellerDoc(sid, 'customers', cid), { [`modeCounts.${advMode}`]: F.increment(1) });
       queue = r.queue;
       const ccol = F.sellerCol(sid, 'collections');
-      b.set(F.doc(ccol, F.newId(ccol)), { accountId: aid, customerId: cid, date, amount: adv, kind: 'advance', mode: advMode, saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid });
+      b.set(F.doc(ccol, F.newId(ccol)), { accountId: aid, customerId: cid, date, amount: adv, kind: 'advance', mode: advMode, ...upiTag(advMode), saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid });
     }
     b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(L.round2(value - adv)), status: 'open', ...(a.inactive ? setActive(a, true) : {}) });
     if (order) {
@@ -1495,7 +1570,7 @@ function renderCollect(cid, aid) {
       <div id="slines">${scrapLineHtml()}</div>
       <button type="button" class="btn ghost small" id="addS">+ ${t('Another type')}</button></div>
     <label>${t('Amount received')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" autofocus></label>
-    <button type="button" class="btn upiqr" id="upiQrBtn" hidden>📲 ${t('Show UPI QR')}</button>
+    <div id="upiBox" hidden>${upiPickHtml('upito')}<button type="button" class="btn upiqr" id="upiQrBtn">📲 ${t('Show UPI QR')}</button></div>
     <details id="discBox" class="discbox"><summary>💸 ${t('Discount')}</summary>
       <div class="discrow"><input name="disc" type="number" step="any" min="0" inputmode="decimal" placeholder="0">
         <div class="seg" style="margin:0"><label><input type="radio" name="dunit" value="rs" checked><span>₹</span></label><label><input type="radio" name="dunit" value="pct"><span>%</span></label></div></div>
@@ -1521,8 +1596,9 @@ function renderCollect(cid, aid) {
   f.disc.oninput = showDisc; f.amt.addEventListener('input', showDisc);
   $$('input[name=dunit]', f).forEach((r) => (r.onchange = showDisc));
   $('#settle').onclick = () => { f.querySelector('input[name=dunit][value=rs]').checked = true; f.disc.value = Math.max(0, L.round2(a.balance - num(f.amt.value))); showDisc(); };
-  const qrBtn = () => { const up = pickedMode('mode', f) === 'upi', v = L.round2(num(f.amt.value)); $('#upiQrBtn').hidden = !up; $('#upiQrBtn').textContent = `📲 ${t('Show UPI QR')}${v > 0 ? ' · ' + money(v) : ''}`; };
-  $('#upiQrBtn').onclick = () => showUpiQr(L.round2(num(f.amt.value)), `${APP_NAME} - ${c.name}`);
+  const qrBtn = () => { const up = pickedMode('mode', f) === 'upi', v = L.round2(num(f.amt.value)); $('#upiBox').hidden = !up; $('#upiQrBtn').textContent = `📲 ${t('Show UPI QR')}${v > 0 ? ' · ' + money(v) : ''}`; };
+  $('#upiQrBtn').onclick = () => showUpiQr(L.round2(num(f.amt.value)), `${APP_NAME} - ${c.name}`, {
+    pick: pickedUpi('upito', f), onPick: (v) => { const r = f.querySelector(`input[name=upito][value="${CSS.escape(v)}"]`); if (r) r.checked = true; } });
   f.amt.addEventListener('input', qrBtn);
   const onMode = () => { const sc = pickedMode('mode', f) === 'scrap'; $('#scrapBox').hidden = !sc; f.amt.readOnly = sc; if (sc) sum(); showDisc(); qrBtn(); };
   $$('input[name=mode]', f).forEach((r) => (r.onchange = onMode));
@@ -1545,7 +1621,7 @@ function renderCollect(cid, aid) {
     const r = L.allocate(queue, amt);
     queue = disc > 0 ? L.allocateDiscount(r.queue, disc).queue : r.queue;
     if (amt > 0 && mode !== 'scrap') b.update(F.sellerDoc(sid, 'customers', cid), { [`modeCounts.${mode}`]: F.increment(1) });
-    const doc = { accountId: aid, customerId: cid, date, amount: amt, kind: 'collection', mode, note: f.note.value.trim(), allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid };
+    const doc = { accountId: aid, customerId: cid, date, amount: amt, kind: 'collection', mode, ...upiTag(mode, pickedUpi('upito', f)), note: f.note.value.trim(), allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid };
     if (mode === 'scrap') {
       doc.scrapItems = items;
       b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, collectionId: id, date, items, total: amt, customerName: c.name, createdAt: now, by: S.user.uid });
@@ -1586,7 +1662,7 @@ function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone }) 
   const ccol = F.sellerCol(sid, 'collections');
   L.cashPayments(value, cost, pays).forEach((p, k) => {
     const id = F.newId(ccol);
-    const doc = { accountId: null, customerId: null, cash: true, buyerName: name || '', date, amount: p.amount, kind: 'cash', mode: p.mode, saleId, note: '', allocations: [{ ref: saleId, amount: p.amount, profit: p.profit }], profit: p.profit, createdAt: now + k, by: S.user.uid };
+    const doc = { accountId: null, customerId: null, cash: true, buyerName: name || '', date, amount: p.amount, kind: 'cash', mode: p.mode, ...upiTag(p.mode), saleId, note: '', allocations: [{ ref: saleId, amount: p.amount, profit: p.profit }], profit: p.profit, createdAt: now + k, by: S.user.uid };
     if (p.mode === 'scrap') {
       doc.scrapItems = p.scrapItems || [];
       b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, collectionId: id, date, items: doc.scrapItems, total: p.amount, customerName: name || t('Cash sale'), createdAt: now, by: S.user.uid });
@@ -1610,7 +1686,7 @@ function applyPendingSale(b, sid, cid, aid, acc, pend, custName) {
   pays.forEach((p, k) => {
     const r = L.allocate(queue, p.amount, saleId); queue = r.queue;
     const id = F.newId(ccol);
-    const doc = { accountId: aid, customerId: cid, date, amount: p.amount, kind: 'advance', mode: p.mode, saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now + k, by: S.user.uid };
+    const doc = { accountId: aid, customerId: cid, date, amount: p.amount, kind: 'advance', mode: p.mode, ...upiTag(p.mode), saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now + k, by: S.user.uid };
     if (p.mode === 'scrap') {
       doc.scrapItems = p.scrapItems || [];
       b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, collectionId: id, date, items: doc.scrapItems, total: p.amount, customerName: custName, createdAt: now, by: S.user.uid });
@@ -2324,7 +2400,7 @@ async function renderBackup() {
       add('Accounts', per.accounts.map((a) => ({ seller: a.seller, id: a.id, customer: cname[a.customerId], customerId: a.customerId, account: a.name, frequency: a.frequency, openingBalance: a.openingBalance, balance: a.balance, status: a.status })));
       const cashName = (x) => `Cash sale${x.buyerName ? ': ' + x.buyerName : ''}`;
       add('Sales', per.sales.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : cname[x.customerId], account: aname[x.accountId], items: items(x.items), saleValue: x.saleValue, cost: x.cost, advance: x.advance, returnedValue: x.creditedValue || 0, id: x.id })));
-      add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: MODE_EN[x.mode] || 'Cash', scrap: (x.scrapItems || []).map((i) => `${i.type} ${i.value}`).join('; '), amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
+      add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: MODE_EN[x.mode] || 'Cash', upiTo: x.upiTo || '', scrap: (x.scrapItems || []).map((i) => `${i.type} ${i.value}`).join('; '), amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
       add('Returns', per.returns.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? 'Cash sale' : cname[x.customerId], account: aname[x.accountId], items: items(x.items), condition: x.condition, credited: x.credited ? 'yes' : 'no', amount: x.amount, cost: x.cost })));
       add('Notes', per.notes.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId] || x.customerName, note: x.text, remindOn: x.dueDate, done: x.done ? 'yes' : 'no' })));
       add('Expenses', per.expenses.map((x) => ({ seller: x.seller, date: x.date, type: x.category, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, note: x.note })));
@@ -2732,11 +2808,14 @@ function editCollection(sid, col, patch) {
     upd.mode = patch.mode;
     if (col.customerId) b.update(F.sellerDoc(sid, 'customers', col.customerId), { [`modeCounts.${col.mode === 'upi' ? 'upi' : 'cash'}`]: F.increment(-1), [`modeCounts.${patch.mode}`]: F.increment(1) });
   }
+  const newMode = upd.mode || col.mode;
+  if (newMode === 'upi') { const v = patch.upiTo || col.upiTo || upiDefault()?.vpa || ''; if (v && v !== col.upiTo) upd.upiTo = v; }
+  else if (col.upiTo) upd.upiTo = F.deleteField();
   if (col.kind === 'collection' && patch.date && patch.date !== col.date) upd.date = patch.date;
   if (col.kind === 'collection' && patch.note != null && patch.note !== (col.note || '')) upd.note = patch.note;
   if (!Object.keys(upd).length) return false;
   b.update(F.sellerDoc(sid, 'collections', col.id), upd);
-  F.audit(b, S.user.uid, 'collection-edit', `sellers/${sid}/collections/${col.id}`, { amount: col.amount, mode: col.mode, date: col.date, note: col.note || '' }, upd);
+  F.audit(b, S.user.uid, 'collection-edit', `sellers/${sid}/collections/${col.id}`, { amount: col.amount, mode: col.mode, upiTo: col.upiTo || '', date: col.date, note: col.note || '' }, { ...upd, ...(upd.upiTo !== undefined && typeof upd.upiTo !== 'string' ? { upiTo: '' } : {}) });
   F.commit(b, onWriteError);
   return 'saved';
 }
@@ -2761,12 +2840,12 @@ async function renderCollections() {
       const canDel = c.kind === 'collection' || c.kind === 'discount';
       return `<li class="card colrow"><div class="row" style="padding:0">
         <a href="${link(c)}" style="flex:1;text-decoration:none;color:inherit"><b>${who(c)}</b>
-          <small>${time(c.createdAt)} · ${esc(S.accounts[c.accountId]?.name || '')}${c.accountId ? ' · ' : ''}${t(KIND_LABEL[c.kind] || 'Collection')}${c.kind === 'discount' ? '' : ' · ' + modeLabel(c.mode)}${c.note ? ' · ' + esc(c.note) : ''}</small></a>
+          <small>${time(c.createdAt)} · ${esc(S.accounts[c.accountId]?.name || '')}${c.accountId ? ' · ' : ''}${t(KIND_LABEL[c.kind] || 'Collection')}${c.kind === 'discount' ? '' : ' · ' + modeLabel(c.mode)}${c.mode === 'upi' && c.upiTo && upiIds().length > 1 ? ' → ' + esc(upiToLabel(c.upiTo)) : ''}${c.note ? ' · ' + esc(c.note) : ''}</small></a>
         <div class="amt">${money(c.amount)}</div></div>
         ${editable || canDel ? `<div class="contact">${editable ? `<button class="btn small" data-ed="${c.id}">✏️ ${t('Edit')}</button>` : ''}${canDel ? `<button class="btn small danger" style="width:auto" data-cdel="${c.id}">× ${t('Delete')}</button>` : ''}</div>` : ''}
         ${open === c.id ? `<form class="form edbox" data-edf="${c.id}">
           ${c.kind !== 'cash' ? `<label>${t('Amount')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" value="${c.amount}"></label>` : ''}
-          ${c.mode !== 'scrap' ? `<label>${t('Paid by')}</label>${payPicker('em_' + c.id, c.mode)}` : `<div class="small muted">${t('Scrap: delete and enter again to change it.')}</div>`}
+          ${c.mode !== 'scrap' ? `<label>${t('Paid by')}</label>${payPicker('em_' + c.id, c.mode)}${upiPickHtml('eu_' + c.id, c.upiTo)}` : `<div class="small muted">${t('Scrap: delete and enter again to change it.')}</div>`}
           ${c.kind === 'collection' ? `<div class="two"><label>${t('Date')}<input name="date" type="date" value="${c.date}" max="${today()}"></label><label>${t('Note')}<input name="note" value="${esc(c.note || '')}"></label></div>` : ''}
           ${c.kind === 'advance' ? `<div class="small muted">${t('Advance of a sale: 0 removes it.')}</div>` : c.kind === 'cash' ? `<div class="small muted">${t('Cash sale: only Cash / UPI can change here. For a wrong amount the admin voids it in Cash sales.')}</div>` : ''}
           <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" data-edx>${t('Cancel')}</button></div></form>` : ''}</li>`;
@@ -2793,7 +2872,7 @@ async function renderCollections() {
       e.preventDefault();
       const c = find(f.dataset.edf), patch = {};
       if (f.amt) { const v = Number(String(f.amt.value).replace(/,/g, '')); if (!Number.isFinite(v) || v < 0) return toast(t('Enter a valid amount'), true); patch.amount = v; }
-      if (c.mode !== 'scrap') patch.mode = pickedMode('em_' + c.id, f);
+      if (c.mode !== 'scrap') { patch.mode = pickedMode('em_' + c.id, f); if (patch.mode === 'upi') patch.upiTo = pickedUpi('eu_' + c.id, f); }
       if (f.date) patch.date = f.date.value || c.date;
       if (f.note) patch.note = f.note.value.trim();
       if (patch.amount === 0 && c.kind === 'collection' && !confirm(t('Amount 0 deletes this collection. Continue?'))) return;
@@ -2806,10 +2885,32 @@ async function renderCollections() {
   await draw();
 }
 
-// ---------- UPI QR (each seller's own UPI ID; payments go straight to that seller) ----------
-// Kept in the seller's book: sellers/<key>/meta/upi {vpa, name}. The QR is made on the phone (works offline).
+// ---------- UPI QR (each seller's own UPI IDs; payments go straight to that seller) ----------
+// Kept in the seller's book: sellers/<key>/meta/upi {ids: [{label, vpa, name}], def, vpa, name}.
+// vpa/name mirror the default ID (older versions stored only those). The QR is made on the phone (works offline).
 // The app cannot see whether the money arrived: the seller checks their UPI app, then saves the collection.
 const VPA_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z][a-zA-Z0-9.-]{1,64}$/;
+const upiIds = () => {
+  const u = S.upi || {};
+  if (Array.isArray(u.ids) && u.ids.length) return u.ids.filter((x) => x && x.vpa);
+  return u.vpa ? [{ label: '', vpa: u.vpa, name: u.name || '' }] : [];
+};
+const upiDefIdx = () => { const n = upiIds().length, d = Number(S.upi?.def) || 0; return d >= 0 && d < n ? d : 0; };
+const upiDefault = () => upiIds()[upiDefIdx()] || null;
+const upiByVpa = (vpa) => upiIds().find((x) => x.vpa === vpa) || null;
+const upiLabel = (u) => (u ? u.label || u.vpa : '');
+/** Name of a saved ID for a collection's upiTo (falls back to the ID itself if it was removed later). */
+const upiToLabel = (vpa) => (vpa ? upiLabel(upiByVpa(vpa)) || vpa : '');
+/** Fields to store on a collection paid by UPI: which of the seller's IDs the money went to. */
+const upiTag = (mode, vpa) => { const v = vpa || upiDefault()?.vpa; return mode === 'upi' && v ? { upiTo: v } : {}; };
+/** Picker for the receiving ID; empty when the seller has 0 or 1 IDs. */
+const upiPickHtml = (name, sel) => {
+  const ids = upiIds(); if (ids.length < 2) return '';
+  const cur = upiByVpa(sel) ? sel : upiDefault().vpa;
+  return `<div class="upipick"><span class="small muted">${t('To')}</span><div class="seg" role="radiogroup">${ids.map((u) =>
+    `<label><input type="radio" name="${name}" value="${esc(u.vpa)}" ${u.vpa === cur ? 'checked' : ''}><span>${esc(upiLabel(u))}</span></label>`).join('')}</div></div>`;
+};
+const pickedUpi = (name, root = document) => root.querySelector(`input[name=${name}]:checked`)?.value || upiDefault()?.vpa || '';
 function upiUri(u, amount, note) {
   const q = [`pa=${encodeURIComponent(u.vpa).replace(/%40/g, "@")}`, `pn=${encodeURIComponent(u.name || u.vpa)}`];
   if (amount > 0) q.push(`am=${(Math.round(amount * 100) / 100).toFixed(2)}`);
@@ -2822,48 +2923,91 @@ function qrSvg(text) {
   const q = qrcode(0, 'M'); q.addData(text); q.make();
   return q.createSvgTag({ cellSize: 8, margin: 4, scalable: true });
 }
-/** Full-screen QR card (always dark on white so every phone camera reads it). */
-function showUpiQr(amount = 0, note = '') {
-  const u = S.upi;
-  if (!u?.vpa) { if (confirm(t('Your UPI ID is not set yet. Set it now?'))) go('#/upi'); return; }
+/** Full-screen QR card (always dark on white so every phone camera reads it).
+ *  With 2+ IDs, chips on top switch the QR; onPick(vpa) tells the caller which one is showing. */
+function showUpiQr(amount = 0, note = '', { pick = '', onPick = null } = {}) {
+  const ids = upiIds();
+  if (!ids.length) { if (confirm(t('Your UPI ID is not set yet. Set it now?'))) go('#/upi'); return; }
+  let cur = upiByVpa(pick) || upiDefault();
   const ov = document.createElement('div');
   ov.className = 'qrov';
-  ov.innerHTML = `<div class="qrcard" role="dialog" aria-label="UPI QR">
-      <div class="qrtop"><b>${esc(u.name || '')}</b><button type="button" class="x" id="qrX" aria-label="${t('Close')}">×</button></div>
+  const draw = () => {
+    ov.innerHTML = `<div class="qrcard" role="dialog" aria-label="UPI QR">
+      <div class="qrtop"><b>${esc(cur.name || '')}</b><button type="button" class="x" id="qrX" aria-label="${t('Close')}">×</button></div>
+      ${ids.length > 1 ? `<div class="qrchips">${ids.map((u, i) => `<button type="button" class="qrchip ${u.vpa === cur.vpa ? 'on' : ''}" data-qi="${i}">${esc(upiLabel(u))}</button>`).join('')}</div>` : ''}
       ${amount > 0 ? `<div class="qramt">${money(amount)}</div>` : `<div class="qrhint">${t('Scan and enter the amount')}</div>`}
-      <div class="qrimg">${qrSvg(upiUri(u, amount, note))}</div>
-      <div class="qrvpa">${esc(u.vpa)}</div>
+      <div class="qrimg">${qrSvg(upiUri(cur, amount, note))}</div>
+      <div class="qrvpa">${esc(cur.vpa)}</div>
       <div class="qrlogos">GPay · PhonePe · Paytm · BHIM</div>
       <div class="qrnote">${t('After the money arrives in your UPI app, save the collection.')}</div></div>`;
-  document.body.appendChild(ov);
+    $('#qrX', ov).onclick = close;
+    $$('[data-qi]', ov).forEach((b) => (b.onclick = () => { cur = ids[Number(b.dataset.qi)]; if (onPick) onPick(cur.vpa); draw(); }));
+  };
   const close = () => ov.remove();
-  $('#qrX', ov).onclick = close;
+  document.body.appendChild(ov);
+  draw();
   ov.onclick = (e) => { if (e.target === ov) close(); };
 }
 
 function renderUpiSetup() {
   setTitle(t('My UPI'), '#/menu');
   if (needSeller()) return;
-  const sid = S.sid, u = S.upi || {};
-  view.innerHTML = sellerBar() + `<form id="uf" class="card form">
-    <p class="muted small">${t('Customers scan this QR to pay straight into your own UPI account. Find your UPI ID in GPay / PhonePe / Paytm (profile).')}</p>
-    <label>${t('UPI ID')}<input name="vpa" value="${esc(u.vpa || '')}" placeholder="name@okaxis" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
-    <label>${t('Name shown to the customer')}<input name="nm" value="${esc(u.name || S.profile?.name || '')}" required></label>
-    <button class="btn primary" type="submit">${t('Save')}</button>
-    ${u.vpa ? `<button class="btn" type="button" id="preview">📲 ${t('Show my QR')}</button>` : ''}</form>
-    <p class="muted small">${t('Test once: scan it from another phone and send ₹1.')}</p>`;
-  bindSellerBar();
-  const pv = $('#preview'); if (pv) pv.onclick = () => showUpiQr();
-  $('#uf').onsubmit = (e) => {
-    e.preventDefault();
-    const vpa = e.target.vpa.value.trim().replace(/\s+/g, ''), name = e.target.nm.value.trim();
-    if (!VPA_RE.test(vpa)) return toast(t('That does not look like a UPI ID (example: name@okaxis)'), true);
+  const sid = S.sid;
+  let editing = null; // index being edited, -1 = new, null = form closed
+  const save = (ids, def) => {
+    const d = Math.min(Math.max(0, def), Math.max(0, ids.length - 1)), main = ids[d] || null;
+    const doc = { ids, def: d, vpa: main?.vpa || '', name: main?.name || '', updatedAt: Date.now(), by: S.user.uid };
     const b = F.writeBatch(F.db);
-    b.set(F.sellerDoc(sid, 'meta', 'upi'), { vpa, name, updatedAt: Date.now(), by: S.user.uid });
-    F.audit(b, S.user.uid, 'upi', `sellers/${sid}/meta/upi`, S.upi || null, { vpa, name });
-    F.commit(b, onWriteError); S.upi = { vpa, name };
-    toast(t('Saved')); renderUpiSetup();
+    b.set(F.sellerDoc(sid, 'meta', 'upi'), doc);
+    F.audit(b, S.user.uid, 'upi', `sellers/${sid}/meta/upi`, S.upi ? { ids: upiIds(), def: upiDefIdx() } : null, { ids, def: d });
+    F.commit(b, onWriteError); S.upi = doc;
   };
+  const draw = () => {
+    const ids = upiIds(), def = upiDefIdx();
+    const e = editing != null && editing >= 0 ? ids[editing] : null;
+    const formHtml = editing == null ? '' : `<form id="uf" class="card form">
+      <h3>${e ? t('Edit UPI ID') : t('Add a UPI ID')}</h3>
+      <label>${t('Label')} <small class="muted">(${t('e.g. GPay, SBI')})</small><input name="lb" value="${esc(e?.label || '')}" maxlength="20"></label>
+      <label>${t('UPI ID')}<input name="vpa" value="${esc(e?.vpa || '')}" placeholder="name@okaxis" autocapitalize="off" autocomplete="off" spellcheck="false" required></label>
+      <label>${t('Name shown to the customer')}<input name="nm" value="${esc(e?.name || ids[def]?.name || S.profile?.name || '')}" required></label>
+      <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" id="ufX">${t('Cancel')}</button></div></form>`;
+    view.innerHTML = sellerBar() + `
+      <p class="muted small">${t('Customers scan this QR to pay straight into your own UPI account. Find your UPI ID in GPay / PhonePe / Paytm (profile).')}</p>
+      ${ids.length ? `<ul class="list">${ids.map((u, i) => `<li class="card"><div class="row" style="padding:0">
+          <label class="star" title="${t('Default')}"><input type="radio" name="udef" value="${i}" ${i === def ? 'checked' : ''}><span>★</span></label>
+          <div style="flex:1"><b>${esc(upiLabel(u))}</b><small>${esc(u.vpa)} · ${esc(u.name || '')}${i === def ? ' · ' + t('default') : ''}</small></div></div>
+          <div class="contact"><button class="btn small" data-uq="${i}">📲 ${t('QR')}</button><button class="btn small" data-ue="${i}">✏️ ${t('Edit')}</button><button class="btn small danger" style="width:auto" data-ud="${i}">× ${t('Delete')}</button></div></li>`).join('')}</ul>`
+        : `<p class="muted">${t('No UPI ID yet.')}</p>`}
+      ${editing == null ? `<button class="btn primary" id="uAdd">+ ${t('Add a UPI ID')}</button>` : ''}
+      ${formHtml}
+      ${ids.length > 1 ? `<p class="muted small">${t('★ = shown first. You can switch to another ID on the QR screen.')}</p>` : ''}
+      <p class="muted small">${t('Test once: scan it from another phone and send ₹1.')}</p>`;
+    bindSellerBar();
+    const add = $('#uAdd'); if (add) add.onclick = () => { editing = -1; draw(); $('#uf input[name=lb]')?.focus(); };
+    $$('input[name=udef]').forEach((r) => (r.onchange = () => { save(upiIds(), Number(r.value)); toast(t('Saved')); draw(); }));
+    $$('[data-uq]').forEach((b) => (b.onclick = () => showUpiQr(0, '', { pick: ids[Number(b.dataset.uq)].vpa })));
+    $$('[data-ue]').forEach((b) => (b.onclick = () => { editing = Number(b.dataset.ue); draw(); }));
+    $$('[data-ud]').forEach((b) => (b.onclick = () => {
+      const i = Number(b.dataset.ud), u = ids[i];
+      if (!confirm(`${t('Delete this UPI ID?')}\n${u.vpa}`)) return;
+      const rest = ids.filter((_, k) => k !== i);
+      save(rest, i === def ? 0 : def > i ? def - 1 : def); editing = null; toast(t('Deleted')); draw();
+    }));
+    const f = $('#uf');
+    if (!f) return;
+    $('#ufX').onclick = () => { editing = null; draw(); };
+    f.onsubmit = (ev) => {
+      ev.preventDefault();
+      const vpa = f.vpa.value.trim().replace(/\s+/g, ''), name = f.nm.value.trim(), label = f.lb.value.trim();
+      if (!VPA_RE.test(vpa)) return toast(t('That does not look like a UPI ID (example: name@okaxis)'), true);
+      const list = upiIds().map((x) => ({ label: x.label || '', vpa: x.vpa, name: x.name || '' }));
+      if (list.some((x, k) => k !== editing && x.vpa.toLowerCase() === vpa.toLowerCase())) return toast(t('This UPI ID is already added'), true);
+      const item = { label, vpa, name };
+      if (editing >= 0) list[editing] = item; else list.push(item);
+      save(list, upiDefIdx()); editing = null; toast(t('Saved')); draw();
+    };
+  };
+  draw();
 }
 
 // ---------- day-end closing ----------
