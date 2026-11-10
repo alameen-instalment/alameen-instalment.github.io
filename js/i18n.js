@@ -1,5 +1,6 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Others': 'മറ്റുള്ളവർ',
   'Could not open contacts': 'കോൺടാക്ട്സ് തുറക്കാൻ പറ്റിയില്ല',
   'From contacts': 'കോൺടാക്ടിൽ നിന്ന്',
   'This contact has no phone number': 'ഈ കോൺടാക്ടിൽ ഫോൺ നമ്പർ ഇല്ല',

@@ -1149,22 +1149,45 @@ function renderPick(action) {
   setTitle(action === 'sale' ? t('New sale') : action === 'order' ? t('New order') : t('Collection'), action === 'order' ? '#/orders' : '#/home');
   if (needSeller()) return;
   try { sessionStorage.setItem('afterNewCustomer', action === 'order' ? 'order' : ''); } catch {}
+  let paidToday = new Set(), visitedToday = new Set();
   const draw = () => {
     const qv = ($('#q')?.value || '').toLowerCase();
-    // today's route first, then by name
-    const plan = todayPlan();
-    const list = Object.values(S.customers).filter((c) => searchHit(c, qv))
-      .sort((a, b) => (onTodayRoute(b, plan) - onTodayRoute(a, plan)) || a.name.localeCompare(b.name));
-    $('#plist').innerHTML = (action === 'order'
-      ? list.map((c) => `<li><a class="row" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${placeBadge(c)}<b>${esc(c.name)}</b><small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`).join('')
-      : list.flatMap((c) => accountsOf(c.id).filter((a) => a.status !== 'closed').map((a) =>
-        `<li><a class="row" href="#/${action}/${c.id}/${a.id}"><div>${placeBadge(c)}<b>${esc(c.name)}</b><small>${esc(a.name)} · ${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`)).join(''))
-      || `<li class="muted">${t('No matching customer')}</li>`;
+    // No search: today's route first in the same order as Customers → Today (arranged order, then lane / house no.),
+    // a route moved here for a holiday after it, then everyone else by name. A search shows the hits by name.
+    const plan = todayPlan(), all = Object.values(S.customers), byName = (x, y) => x.name.localeCompare(y.name);
+    const sections = [];
+    if (!qv && plan.days.length) {
+      const seen = new Set();
+      todayRouteList(plan).forEach((g) => { g.list.forEach((c) => seen.add(c.id)); sections.push({ head: g.moved ? `↩ ${dayLabel(g.day)} ${t('route (moved)')}` : '', cls: g.moved ? 'moved' : '', route: true, list: g.list }); });
+      const rest = all.filter((c) => !seen.has(c.id)).sort(byName);
+      if (rest.length) sections.push({ head: t('Others'), cls: '', route: false, list: rest });
+    } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
+    let n = 0;
+    const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : '');
+    const name = (c, seq) => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${esc(c.name)}</b>`;
+    const html = sections.map((sec) => {
+      const rows = sec.list.map((c) => {
+        const seq = sec.route ? ++n : 0, paid = paidToday.has(c.id) ? 'paid' : '';
+        if (action === 'order') return `<li><a class="row ${paid}" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${name(c, seq)}<small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`;
+        return accountsOf(c.id).filter((a) => a.status !== 'closed').map((a, i) =>
+          `<li><a class="row ${paid}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
+      }).join('');
+      return rows ? (sec.head ? `<li class="lanehead ${sec.cls}">${esc(sec.head)}</li>` : '') + rows : '';
+    }).join('');
+    $('#plist').innerHTML = html || `<li class="muted">${t('No matching customer')}</li>`;
     $$('[data-pick-order]').forEach((a) => (a.onclick = () => { try { sessionStorage.setItem('orderBack', '#/orders'); } catch {} }));
   };
   view.innerHTML = `<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}" autofocus><a class="btn" href="#/customer-new">+ ${t('New customer')}</a></div><ul class="list" id="plist"></ul>`;
   $('#q').oninput = draw;
   draw();
+  const sid = S.sid;
+  Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', today()))),
+    F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', today())))]).then(([cols, vis]) => {
+    if (!$('#plist')) return; // left the page already
+    paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
+    visitedToday = new Set(vis.map((v) => v.customerId));
+    draw();
+  }).catch(() => {});
 }
 
 // ---------- account ledger ----------
