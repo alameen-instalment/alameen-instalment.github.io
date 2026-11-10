@@ -1507,6 +1507,7 @@ function renderSale(cid, aid) {
       <div class="two"><label>${t('Advance received')}<input id="adv" type="number" step="any" min="0" inputmode="decimal" placeholder="0"></label>
       <label>${t('Date')}<input id="sdate" type="date" value="${today()}" max="${today()}"></label></div>
       <label>${t('Advance paid by')}</label>${payPicker('advMode', L.preferredMode(c.modeCounts))}
+      ${upiQrBoxHtml()}
       <div class="calcbox" id="calc"></div>
       <button class="btn primary" id="saveSale">${t('Save sale')}</button></div>`;
   let tot = 0;
@@ -1517,8 +1518,10 @@ function renderSale(cid, aid) {
       <div class="kv"><span>${t('New account balance')}</span><b>${money(L.round2(a.balance + rest))}</b></div>
       ${rest > 0 ? `<div class="kv small"><span>${t('To finish in a year')}</span><span>${money(Math.ceil(rest / perN))} / ${t(perW)}</span></div>` : ''}` : '';
   };
-  mountLines($('#lines'), rows, (v) => { tot = v; calc(); });
-  $('#adv').oninput = calc;
+  const advQr = bindUpiQr(view, { amount: () => Math.min(num($('#adv').value), tot || Infinity), note: () => `${APP_NAME} - ${c.name}`, visible: () => pickedMode('advMode') === 'upi' });
+  $$('input[name=advMode]').forEach((r) => (r.onchange = advQr));
+  mountLines($('#lines'), rows, (v) => { tot = v; calc(); advQr(); });
+  $('#adv').oninput = () => { calc(); advQr(); };
   $('#saveSale').onclick = () => {
     const lines = toSaleLines(rows);
     if (!lines.length) return toast(t('Enter at least one item with quantity and price'), true);
@@ -1538,7 +1541,7 @@ function renderSale(cid, aid) {
       b.update(F.sellerDoc(sid, 'customers', cid), { [`modeCounts.${advMode}`]: F.increment(1) });
       queue = r.queue;
       const ccol = F.sellerCol(sid, 'collections');
-      b.set(F.doc(ccol, F.newId(ccol)), { accountId: aid, customerId: cid, date, amount: adv, kind: 'advance', mode: advMode, ...upiTag(advMode), saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid });
+      b.set(F.doc(ccol, F.newId(ccol)), { accountId: aid, customerId: cid, date, amount: adv, kind: 'advance', mode: advMode, ...upiTag(advMode, pickedUpi('upito')), saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid });
     }
     b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(L.round2(value - adv)), status: 'open', ...(a.inactive ? setActive(a, true) : {}) });
     if (order) {
@@ -1570,7 +1573,7 @@ function renderCollect(cid, aid) {
       <div id="slines">${scrapLineHtml()}</div>
       <button type="button" class="btn ghost small" id="addS">+ ${t('Another type')}</button></div>
     <label>${t('Amount received')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" autofocus></label>
-    <div id="upiBox" hidden>${upiPickHtml('upito')}<button type="button" class="btn upiqr" id="upiQrBtn">📲 ${t('Show UPI QR')}</button></div>
+    ${upiQrBoxHtml()}
     <details id="discBox" class="discbox"><summary>💸 ${t('Discount')}</summary>
       <div class="discrow"><input name="disc" type="number" step="any" min="0" inputmode="decimal" placeholder="0">
         <div class="seg" style="margin:0"><label><input type="radio" name="dunit" value="rs" checked><span>₹</span></label><label><input type="radio" name="dunit" value="pct"><span>%</span></label></div></div>
@@ -1596,9 +1599,7 @@ function renderCollect(cid, aid) {
   f.disc.oninput = showDisc; f.amt.addEventListener('input', showDisc);
   $$('input[name=dunit]', f).forEach((r) => (r.onchange = showDisc));
   $('#settle').onclick = () => { f.querySelector('input[name=dunit][value=rs]').checked = true; f.disc.value = Math.max(0, L.round2(a.balance - num(f.amt.value))); showDisc(); };
-  const qrBtn = () => { const up = pickedMode('mode', f) === 'upi', v = L.round2(num(f.amt.value)); $('#upiBox').hidden = !up; $('#upiQrBtn').textContent = `📲 ${t('Show UPI QR')}${v > 0 ? ' · ' + money(v) : ''}`; };
-  $('#upiQrBtn').onclick = () => showUpiQr(L.round2(num(f.amt.value)), `${APP_NAME} - ${c.name}`, {
-    pick: pickedUpi('upito', f), onPick: (v) => { const r = f.querySelector(`input[name=upito][value="${CSS.escape(v)}"]`); if (r) r.checked = true; } });
+  const qrBtn = bindUpiQr(f, { amount: () => num(f.amt.value), note: () => `${APP_NAME} - ${c.name}`, visible: () => pickedMode('mode', f) === 'upi' });
   f.amt.addEventListener('input', qrBtn);
   const onMode = () => { const sc = pickedMode('mode', f) === 'scrap'; $('#scrapBox').hidden = !sc; f.amt.readOnly = sc; if (sc) sum(); showDisc(); qrBtn(); };
   $$('input[name=mode]', f).forEach((r) => (r.onchange = onMode));
@@ -1662,7 +1663,7 @@ function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone }) 
   const ccol = F.sellerCol(sid, 'collections');
   L.cashPayments(value, cost, pays).forEach((p, k) => {
     const id = F.newId(ccol);
-    const doc = { accountId: null, customerId: null, cash: true, buyerName: name || '', date, amount: p.amount, kind: 'cash', mode: p.mode, ...upiTag(p.mode), saleId, note: '', allocations: [{ ref: saleId, amount: p.amount, profit: p.profit }], profit: p.profit, createdAt: now + k, by: S.user.uid };
+    const doc = { accountId: null, customerId: null, cash: true, buyerName: name || '', date, amount: p.amount, kind: 'cash', mode: p.mode, ...upiTag(p.mode, p.upiTo), saleId, note: '', allocations: [{ ref: saleId, amount: p.amount, profit: p.profit }], profit: p.profit, createdAt: now + k, by: S.user.uid };
     if (p.mode === 'scrap') {
       doc.scrapItems = p.scrapItems || [];
       b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, collectionId: id, date, items: doc.scrapItems, total: p.amount, customerName: name || t('Cash sale'), createdAt: now, by: S.user.uid });
@@ -1686,7 +1687,7 @@ function applyPendingSale(b, sid, cid, aid, acc, pend, custName) {
   pays.forEach((p, k) => {
     const r = L.allocate(queue, p.amount, saleId); queue = r.queue;
     const id = F.newId(ccol);
-    const doc = { accountId: aid, customerId: cid, date, amount: p.amount, kind: 'advance', mode: p.mode, ...upiTag(p.mode), saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now + k, by: S.user.uid };
+    const doc = { accountId: aid, customerId: cid, date, amount: p.amount, kind: 'advance', mode: p.mode, ...upiTag(p.mode, p.upiTo), saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now + k, by: S.user.uid };
     if (p.mode === 'scrap') {
       doc.scrapItems = p.scrapItems || [];
       b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, collectionId: id, date, items: doc.scrapItems, total: p.amount, customerName: custName, createdAt: now, by: S.user.uid });
@@ -1713,6 +1714,7 @@ function renderCashSale() {
       <label>${t('Paid')}</label>
       <div class="two"><label>${t('Cash')}<input id="pcash" type="number" step="any" min="0" inputmode="decimal"></label>
         <label>UPI<input id="pupi" type="number" step="any" min="0" inputmode="decimal"></label></div>
+      ${upiQrBoxHtml()}
       <details id="scrapPay" class="discbox"><summary>♻️ ${t('Scrap')}</summary>
         <div class="muted small">${t('Material taken instead of money. Enter the value given for each type.')}</div>
         <div id="slines">${scrapLineHtml()}</div><button type="button" class="btn ghost small" id="addS">+ ${t('Another type')}</button></details>
@@ -1722,7 +1724,7 @@ function renderCashSale() {
   const value = () => tot;
   const scrapItems = () => $$('#slines .scrapline').map((r) => ({ type: $('[name=st]', r).value, value: L.round2(num($('[name=sv]', r).value)) })).filter((x) => x.value > 0);
   const scrapTotal = () => L.round2(scrapItems().reduce((s, x) => s + x.value, 0));
-  const pays = () => [{ mode: 'cash', amount: L.round2(num($('#pcash').value)) }, { mode: 'upi', amount: L.round2(num($('#pupi').value)) }, { mode: 'scrap', amount: scrapTotal(), scrapItems: scrapItems() }];
+  const pays = () => [{ mode: 'cash', amount: L.round2(num($('#pcash').value)) }, { mode: 'upi', amount: L.round2(num($('#pupi').value)), ...upiTag('upi', pickedUpi('upito')) }, { mode: 'scrap', amount: scrapTotal(), scrapItems: scrapItems() }];
   const paidNow = () => L.round2(pays().reduce((s, p) => s + p.amount, 0));
   const info = () => {
     const v = value(), p = paidNow(), bal = L.round2(v - p);
@@ -1734,7 +1736,8 @@ function renderCashSale() {
   const bindS = () => { $$('#slines [name=sv]').forEach((i) => (i.oninput = refill)); $$('#slines [data-srm]').forEach((b) => (b.onclick = () => { if ($$('#slines .scrapline').length > 1) b.parentElement.remove(); refill(); })); };
   $('#addS').onclick = () => { $('#slines').insertAdjacentHTML('beforeend', scrapLineHtml()); bindS(); };
   $('#pcash').oninput = () => { cashTouched = true; info(); };
-  $('#pupi').oninput = refill;
+  const cashQr = bindUpiQr($('#csf'), { amount: () => num($('#pupi').value), note: () => `${APP_NAME} - ${t('Cash sale')}`, visible: () => num($('#pupi').value) > 0 });
+  $('#pupi').oninput = () => { refill(); cashQr(); };
   bindS();
   mountLines($('#lines'), rows, (v) => { tot = v; total(); });
   $('#saveCash').onclick = () => {
@@ -2947,6 +2950,17 @@ function showUpiQr(amount = 0, note = '', { pick = '', onPick = null } = {}) {
   document.body.appendChild(ov);
   draw();
   ov.onclick = (e) => { if (e.target === ov) close(); };
+}
+
+/** "Show UPI QR" block for a form: box html + a refresh() that shows it when visible() and labels the amount. */
+const upiQrBoxHtml = () => `<div id="upiBox" hidden>${upiPickHtml('upito')}<button type="button" class="btn upiqr" id="upiQrBtn">📲 ${t('Show UPI QR')}</button></div>`;
+function bindUpiQr(root, { amount, note, visible }) {
+  const box = $('#upiBox', root), btn = $('#upiQrBtn', root);
+  const refresh = () => { const v = L.round2(amount() || 0); box.hidden = !visible(); btn.textContent = `📲 ${t('Show UPI QR')}${v > 0 ? ' · ' + money(v) : ''}`; };
+  btn.onclick = () => showUpiQr(L.round2(amount() || 0), note(), {
+    pick: pickedUpi('upito', root), onPick: (v) => { const r = root.querySelector(`input[name=upito][value="${CSS.escape(v)}"]`); if (r) r.checked = true; } });
+  refresh();
+  return refresh;
 }
 
 function renderUpiSetup() {
