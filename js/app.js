@@ -786,6 +786,17 @@ function lastActivity(cols, vis) {
   return best?.customerId || '';
 }
 const scrollNearTop = (el) => { if (el) window.scrollTo({ top: Math.max(0, el.getBoundingClientRect().top + window.scrollY - 130) }); };
+/**
+ * Keep a list row in view while the list is still filling in (customers and today's marks arrive a moment after the
+ * page opens on a phone, and every redraw can move the row). Stops after a few seconds or as soon as the user scrolls.
+ * Returns apply(), to call after each redraw.
+ */
+function stickyScroll(sel) {
+  let until = Date.now() + 8000;
+  const stop = () => { until = 0; ['touchstart', 'wheel', 'keydown'].forEach((ev) => window.removeEventListener(ev, stop)); };
+  ['touchstart', 'wheel', 'keydown'].forEach((ev) => window.addEventListener(ev, stop, { passive: true }));
+  return () => { if (Date.now() > until) return; const el = $(sel); if (el) scrollNearTop(el); };
+}
 /** A short-lived bar at the bottom with an undo button. */
 function undoBar(msg, undo) {
   $$('.undobar').forEach((x) => x.remove());
@@ -850,7 +861,7 @@ function renderCustomers() {
         const dm = byRoute ? dueMark(c.id, paid) : '';
         const dim = dm || (byRoute && !paid && pausedCust(c.id)); // not due yet, or ⏸ inactive: shown faded so nobody goes there by mistake
         return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dim ? 'notdue' : ''}">
-          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">×</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
@@ -994,14 +1005,15 @@ function renderCustomers() {
   draw();
   setTimeout(maintainBook, 2500);
   loadPaid().then(() => {
-    // Coming back after a collection: bring that customer into view so the next house is right below.
+    // Open the list at the customer just collected from, else at today's last ✓ / ⊘, so the next houses are right below.
     let last = null; try { last = sessionStorage.getItem('lastCust'); sessionStorage.removeItem('lastCust'); } catch {}
-    const el = last && $(`#clist [data-cid="${last}"]`);
-    if (el) return el.scrollIntoView({ block: 'center' });
-    // Otherwise open the route list at today's last ✓ / ⊘ so the next houses are right below it.
-    if (filter !== 'all' && filter !== 'none' && lastAct) scrollNearTop($(`#clist [data-cid="${lastAct}"]`));
+    const target = last || lastAct;
+    if (!target || ($('#q')?.value || '')) return;
+    keepInView = stickyScroll(`#clist [data-cid="${target}"]`);
+    keepInView();
   });
-  S.refresh = draw;
+  let keepInView = () => {};
+  S.refresh = () => { draw(); keepInView(); };
 }
 
 function accountRowHtml(i, a = {}) {
@@ -1475,7 +1487,7 @@ function renderPick(action) {
       if (rest.length) sections.push({ head: t('Others'), cls: '', route: false, list: rest });
     } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
     let n = 0;
-    const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : '');
+    const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited – no payment')}">×</span> ` : '');
     const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${pauseMark(c.id)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
@@ -1490,7 +1502,7 @@ function renderPick(action) {
     $('#plist').innerHTML = html || `<li class="muted">${t('No matching customer')}</li>`;
     $$('[data-pick-order]').forEach((a) => (a.onclick = () => { try { sessionStorage.setItem('orderBack', '#/orders'); } catch {} }));
   };
-  view.innerHTML = `${action === 'order' ? `<a class="btn block" href="#/order-random" id="randOrd" style="margin-bottom:8px">🎲 ${t('Random order (not a customer)')}</a>` : ''}<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}" autofocus><a class="btn" href="#/customer-new">+ ${t('New customer')}</a></div><ul class="list" id="plist"></ul>`;
+  view.innerHTML = `${action === 'order' ? `<a class="btn block" href="#/order-random" id="randOrd" style="margin-bottom:8px">🎲 ${t('Random order (not a customer)')}</a>` : ''}<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}"><a class="btn" href="#/customer-new">+ ${t('New customer')}</a></div><ul class="list" id="plist"></ul>`;
   $('#q').oninput = draw;
   draw();
   const sid = S.sid;
@@ -1501,7 +1513,14 @@ function renderPick(action) {
     visitedToday = new Set(vis.map((v) => v.customerId));
     lastAct = lastActivity(cols, vis);
     return loadPromises(sid);
-  }).then(() => { if (!$('#plist')) return; draw(); if (lastAct && !($('#q')?.value)) scrollNearTop($(`#plist [data-cid="${lastAct}"]`)); }).catch(() => {});
+  }).then(() => {
+    if (!$('#plist')) return; draw();
+    if (lastAct && !($('#q')?.value)) {
+      // the empty search box had focus (keyboard up, page at the top): let go of it so the route position shows
+      if (document.activeElement === $('#q')) $('#q').blur();
+      const keep = stickyScroll(`#plist [data-cid="${lastAct}"]`); keep(); S.refresh = () => { if ($('#plist')) { draw(); keep(); } };
+    }
+  }).catch(() => {});
 }
 
 // ---------- account ledger ----------

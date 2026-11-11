@@ -218,8 +218,8 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .fchip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .fchip.on small { color: var(--accent-ink); opacity: .75; }
 .list > li > .row.paid { background: var(--accent-soft); border-radius: 14px; }
-.tick { color: var(--wa); }
-.nopay { color: var(--grey); font-weight: 800; }
+.tick { color: var(--wa); font-size: 1.45em; font-weight: 900; line-height: 1; vertical-align: -2px; -webkit-text-stroke: 0.6px currentColor; }
+.nopay { color: #E2531B; display: inline-flex; align-items: center; justify-content: center; width: 1.5em; height: 1.5em; border: 3px solid currentColor; border-radius: 50%; font-size: 1.1em; font-weight: 900; line-height: 1; vertical-align: -4px; box-sizing: border-box; margin-right: 2px; }
 
 /* Home route card with progress dots */
 .routetile { display: block; width: 100%; text-align: left; font: inherit; margin: 10px 0 0; padding: 16px; border-radius: 18px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; box-shadow: var(--shadow); }
