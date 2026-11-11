@@ -1284,7 +1284,7 @@ function renderCustomerForm(id) {
 const noteShareText = (c, n) => [`*${APP_NAME} — ${t('Customer note')}*`, `${c.name}${placeOf(c) ? ' · ' + placeOf(c) : ''}`,
   c.score?.score != null ? `${t('Score')}: ${c.score.score}` : '', `${t('Note')}: ${n.text}`, `— ${S.profile?.name || ''}`].filter(Boolean).join('\n');
 
-const VISIT_REASONS = [['away', 'Not at home'], ['nomoney', 'No money'], ['promise', 'Promised date'], ['noanswer', 'Rang, not answered'], ['unreachable', 'Could not reach (switched off / out of range)']];
+const VISIT_REASONS = [['away', 'Not at home'], ['nomoney', 'No money'], ['promise', 'Promised date'], ['noanswer', 'Rang, not answered'], ['unreachable', 'Switched off / out of range']];
 // How the customer was contacted: in person (house visit) or on the phone, and the reasons each way offers.
 const CONTACT_WAYS = { visit: ['away', 'nomoney'], phone: ['noanswer', 'unreachable', 'nomoney'] };
 const reasonLabel = (r) => t((VISIT_REASONS.find((x) => x[0] === r) || [, r])[1]);
@@ -1449,6 +1449,7 @@ async function renderCustomer(cid) {
     const vf = $('#vf');
     $('#visitBtn').onclick = () => { vf.hidden = !vf.hidden; };
     const showReasons = () => { const via = pickedMode('via', vf) === 'phone' ? 'phone' : 'visit';
+      $('#vreasons').classList.toggle('compact', via === 'phone');
       $('#vreasons').innerHTML = CONTACT_WAYS[via].map((k, i) => `<label><input type="radio" name="r" value="${k}" ${i ? '' : 'checked'}><span>${reasonLabel(k)}</span></label>`).join(''); };
     $$('[name=via]', vf).forEach((r) => (r.onchange = showReasons)); showReasons();
     vf.pk.onchange = () => { $('#pdl').hidden = !vf.pk.checked; };

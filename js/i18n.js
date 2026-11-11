@@ -577,7 +577,7 @@ const ML = {
   'Visited / contacted – no payment': 'പോയി / വിളിച്ചു – പണം കിട്ടിയില്ല',
   'Visits / calls without payment': 'പണം കിട്ടാത്ത സന്ദർശനങ്ങൾ / കോളുകൾ',
   'Rang, not answered': 'റിംഗ് ചെയ്തു, എടുത്തില്ല',
-  'Could not reach (switched off / out of range)': 'കിട്ടിയില്ല (സ്വിച്ച് ഓഫ് / പരിധിക്ക് പുറത്ത്)',
+  'Switched off / out of range': 'സ്വിച്ച് ഓഫ് / ഔട്ട് ഓഫ് റേഞ്ച്',
   'In person': 'നേരിട്ട്',
   "Visits without payment": "പണം കിട്ടാത്ത വിസിറ്റുകൾ",
   "Void": "റദ്ദാക്കുക",
