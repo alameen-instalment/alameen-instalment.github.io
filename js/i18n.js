@@ -1,5 +1,10 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'New customer after this house': 'ഈ വീടിന് ശേഷം പുതിയ കസ്റ്റമർ',
+  'Place in route': 'റൂട്ടിൽ സ്ഥാനം',
+  'Not set (comes at the end)': 'സെറ്റ് ചെയ്യേണ്ട (അവസാനം വരും)',
+  'At the start': 'ഏറ്റവും ആദ്യം',
+  'After': 'ശേഷം:',
   'Written off': 'എഴുതിത്തള്ളി',
   'Recovered after write-off': 'എഴുതിത്തള്ളിയ ശേഷം കിട്ടിയത്',
   'Written off as bad debt': 'കിട്ടാക്കടമായി എഴുതിത്തള്ളി',

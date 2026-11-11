@@ -1044,6 +1044,27 @@ function notDueUntil(cid) {
   return min;
 }
 const dueMark = (cid, paid) => { const d = paid ? '' : notDueUntil(cid); return d ? `<span class="pill duep">${t('Due')} ${shortDate(d)}</span>` : ''; };
+/** A route day's customers in their current order (optionally leaving one out). */
+const routeListFor = (day, skipId = null) => L.routeSort(Object.values(S.customers).filter((x) => x.id !== skipId && daysOf(x).includes(day)), day);
+/**
+ * Put customer `cid` into route `day` right after `afterId` ('__first' = at the start). Saves the whole day's order
+ * (the current order is kept as it is) into the batch and returns the new position of cid.
+ */
+function placeInRoute(b, sid, cid, day, afterId) {
+  const ids = routeListFor(day, cid).map((x) => x.id);
+  const at = afterId === '__first' ? 0 : Math.max(0, ids.indexOf(afterId) + 1) || ids.length;
+  ids.splice(at, 0, cid);
+  let mine = 0;
+  ids.forEach((x, i) => {
+    if (x === cid) { mine = i + 1; return; }
+    const c = S.customers[x]; if (!c || Number(c.routeOrder?.[day]) === i + 1) return;
+    b.update(F.sellerDoc(sid, 'customers', x), { [`routeOrder.${day}`]: i + 1 });
+    c.routeOrder = { ...(c.routeOrder || {}), [day]: i + 1 };
+  });
+  if (S.customers[cid]) { b.update(F.sellerDoc(sid, 'customers', cid), { [`routeOrder.${day}`]: mine }); S.customers[cid].routeOrder = { ...(S.customers[cid].routeOrder || {}), [day]: mine }; }
+  return mine;
+}
+
 /** After a collection is removed or moved, find the account's real last collection date again. */
 async function refreshLastPaid(sid, aid) {
   const cols = await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('accountId', '==', aid))).catch(() => null);
@@ -1077,6 +1098,7 @@ function renderCustomerForm(id) {
     <div class="contact"><button type="button" class="btn ghost small" id="addPhone">+ ${t('Another number')}</button>${canPickContact() ? `<button type="button" class="btn ghost small" id="fromContacts">📇 ${t('From contacts')}</button>` : ''}</div>
     <label>${t('Address')}<textarea name="address" rows="2">${esc(c?.address)}</textarea></label>
     <label>${t('Route day')}</label>${dayPicker(daysOf(c))}
+    <div id="placeBox"></div>
     <div class="card prior">
       <label class="chk"><input type="checkbox" name="pk" ${c?.prior ? 'checked' : ''}> ${t('I already know this customer')}</label>
       <div id="priorBox" ${c?.prior ? '' : 'hidden'}>
@@ -1091,6 +1113,28 @@ function renderCustomerForm(id) {
   let n = 1, pn = $$('.phonerow').length;
   if (!c) $('#addAcc').onclick = () => { $('#accs').insertAdjacentHTML('beforeend', accountRowHtml(n++)); bindAccountRows(); };
   bindAccountRows();
+  // Optional place in each chosen route day: "after <customer>" (or first). Left empty = as before (end of the arranged list).
+  let after = null; // from "New customer after this house" on a customer page
+  if (!c) { try { const x = JSON.parse(sessionStorage.getItem('newAfter') || 'null'); sessionStorage.removeItem('newAfter'); if (x && Date.now() - x.at < 3600e3 && S.customers[x.cid]) after = x; } catch {} }
+  if (after) {
+    const f0 = $('#cf'); if (after.lane && !f0.lane.value) f0.lane.value = after.lane;
+    after.days.forEach((d) => { const cb = $(`#cf input[name=day][value="${d}"]`); if (cb) cb.checked = true; });
+  }
+  const placeSel = {}; // day -> chosen value, kept while days are ticked on/off
+  const drawPlace = () => {
+    const days = $$('#cf input[name=day]:checked').map((x) => Number(x.value));
+    $$('#placeBox select').forEach((sl) => (placeSel[sl.dataset.day] = sl.value));
+    $('#placeBox').innerHTML = days.map((d) => {
+      const list = routeListFor(d, id);
+      if (!list.length) return '';
+      const cur = placeSel[d] ?? (after && list.some((x) => x.id === after.cid) ? after.cid : '');
+      return `<label>${t('Place in route')} · ${dayLabel(d)} <small class="muted">(${t('optional')})</small><select data-day="${d}">
+        <option value="">${t('Not set (comes at the end)')}</option><option value="__first" ${cur === '__first' ? 'selected' : ''}>${t('At the start')}</option>
+        ${list.map((x, i) => `<option value="${x.id}" ${cur === x.id ? 'selected' : ''}>${t('After')} ${i + 1}. ${esc(x.name)}${x.house ? ' · ' + esc(x.house) : ''}</option>`).join('')}</select></label>`;
+    }).join('');
+  };
+  $$('#cf input[name=day]').forEach((cb) => (cb.onchange = drawPlace));
+  drawPlace();
   // Number already a customer of another seller? Warn (never block) so the seller can ask them first.
   let cashSalesCache = null;
   if (pend) {
@@ -1162,7 +1206,9 @@ function renderCustomerForm(id) {
     if (!c || priorChanged) data.prior = prior;
     const hashes = await hashesOf(phones);
     data.phoneHashes = hashes;
+    const places = $$('#placeBox select').filter((sl) => sl.value && data.days.includes(Number(sl.dataset.day))).map((sl) => [Number(sl.dataset.day), sl.value]);
     if (c) {
+      places.forEach(([d, v]) => placeInRoute(b, sid, id, d, v));
       writeIndex(b, sid, id, c, hashes);
       const upd = { ...data };
       if (c.address && c.address !== data.address) upd.addressHistory = [...(c.addressHistory || []), { address: c.address, until: today() }];
@@ -1175,6 +1221,8 @@ function renderCustomerForm(id) {
     }
     const ccol = F.sellerCol(sid, 'customers');
     const cid = F.newId(ccol);
+    const newRO = {}; places.forEach(([d, v]) => { newRO[d] = placeInRoute(b, sid, cid, d, v); });
+    if (Object.keys(newRO).length) data.routeOrder = newRO;
     const pendNow = pend ? readPending() : null;
     if (pendNow && !$$('.acc-row').length) { sb.disabled = false; return toast(t('Add an account for the cash sale balance'), true); }
     const mc = pendNow ? { modeCounts: { cash: pendNow.pays.filter((p) => p.mode === 'cash').length, upi: pendNow.pays.filter((p) => p.mode === 'upi').length } } : {};
@@ -1303,7 +1351,8 @@ async function renderCustomer(cid) {
         <form id="af">${accountRowHtml(1)}<button class="btn primary" type="submit">${t('Add account')}</button></form></details>
       <div class="contact">${c.ban
         ? (c.ban.by === sid || isAdmin() ? `<button class="btn small danger" id="unban">🚫 ${t('Remove flag')} (${esc(c.ban.reason)})</button>` : '')
-        : `<button class="btn small" id="ban">🚫 ${t("Flag: don't give new items")}</button>`}</div>
+        : `<button class="btn small" id="ban">🚫 ${t("Flag: don't give new items")}</button>`}
+        ${daysOf(c).length ? `<button class="btn small" id="addAfter">➕ ${t('New customer after this house')}</button>` : ''}</div>
       <h3>${t('Notes and reminders')}</h3>
       <form id="nf" class="card form">
         <textarea name="text" rows="2" placeholder="${t('Note, e.g. moved house / deliver item')}" required></textarea>
@@ -1335,6 +1384,8 @@ async function renderCustomer(cid) {
       F.audit(b, S.user.uid, 'customer-flag', `sellers/${sid}/customers/${cid}`, c.ban || null, ban || null);
       F.commit(b, onWriteError); c.ban = ban || null; draw();
     };
+    const aa = $('#addAfter');
+    if (aa) aa.onclick = () => { try { sessionStorage.setItem('newAfter', JSON.stringify({ cid, days: daysOf(c), lane: c.lane || '', at: Date.now() })); } catch {} go('#/customer-new'); };
     const bb = $('#ban'), ub = $('#unban');
     if (bb) bb.onclick = () => { const r = (prompt(t('Reason (other sellers can read this)')) || '').trim(); if (r) setBan({ reason: r, by: sid, byName: sellerName(sid), at: today() }); };
     if (ub) ub.onclick = () => { if (confirm(t('Remove the flag?'))) setBan(null); };
