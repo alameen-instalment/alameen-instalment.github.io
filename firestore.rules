@@ -37,13 +37,8 @@ service cloud.firestore {
     match /catalogPhotos/{id}   { allow read: if true; allow write: if isAdmin(); }
     // Seller name + WhatsApp number for the shop link (public).
     match /shopSellers/{key}    { allow read: if true; allow write: if ownKey(key); }
-    // Pending orders without customer details, for the shared "to buy" list. The order's seller writes it;
-    // any user may mark items bought (items / updatedAt / boughtBy only, same seller).
-    match /demand/{id}          { allow read: if isUser(); allow create: if ownKey(request.resource.data.sellerKey);
-                                  allow update: if ownKey(request.resource.data.sellerKey)
-                                                || (isUser() && request.resource.data.sellerKey == resource.data.sellerKey
-                                                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['items', 'updatedAt', 'boughtBy']));
-                                  allow delete: if isUser(); }
+    // Pending orders without customer details, for the shared "to buy" list.
+    match /demand/{id}          { allow read: if isUser(); allow create, update: if ownKey(request.resource.data.sellerKey); allow delete: if isUser(); }
     // Scrap taken as payment (one doc per collection) and bulk scrap sales.
     match /scrapIn/{id}         { allow create: if ownKey(request.resource.data.sellerKey); allow delete: if isUser(); allow read, update: if isAdmin(); }
     match /scrapSales/{id}      { allow read, write: if isAdmin(); }

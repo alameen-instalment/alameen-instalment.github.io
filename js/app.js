@@ -2889,7 +2889,7 @@ async function renderScrap() {
 // ---------- orders ----------
 const orderText = (o) => o.items.map((i) => `${i.name} × ${i.qty}`).join(', ');
 // "To buy": an order item goes there only when its seller taps 🛒. The shared demand/<orderId> doc keeps, per item,
-// how many are still to buy (toBuy). Anyone can mark items bought there; the order itself stays in To carry.
+// how many are still to buy (toBuy). The admin (or that seller) marks items bought; the order itself stays in To carry.
 /** Demand doc for a pending order; toBuy per item comes from `want` (index -> count) or else the previous doc. */
 function demandDoc(sid, o, prev, want = null) {
   const items = o.items.map((i, k) => {
@@ -3020,7 +3020,7 @@ async function renderOrders() {
       body = `<p class="muted small">${t('Only items marked 🛒 in an order. Customer names are not shown here.')}</p>
         ${keys.map((k) => `<h3>${esc(sellerName(k))}</h3><ul class="list">${Object.entries(groups[k]).sort((x, y) => (x[1].first < y[1].first ? -1 : 1)).map(([key, r]) =>
           `<li class="card buyrow"><div><b>${esc(r.name)}</b> <b class="bq">× ${r.qty}</b><small>${t('first needed')} ${fmtDate(r.first)}</small></div>
-            <button class="btn small primary" data-bought="${esc(k)}|${esc(key)}">✓ ${t('Bought')}</button></li>`).join('')}</ul>`).join('')
+            ${k === S.sid || isAdmin() ? `<button class="btn small primary" data-bought="${esc(k)}|${esc(key)}">✓ ${t('Bought')}</button>` : ''}</li>`).join('')}</ul>`).join('')
           || `<div class="empty">${t('Nothing to buy. Tap 🛒 on an order item in To carry when it has to be bought.')}</div>`}`;
     } else {
       const [all, mine] = await Promise.all([F.fetchAll(F.query(F.sellerCol(S.sid, 'orders'), F.where('status', '==', 'pending'))),
@@ -3065,7 +3065,7 @@ async function renderOrders() {
       const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'demand', id), demandDoc(S.sid, o, dms[id], want)); F.commit(b, onWriteError);
       toast(want[k] ? `🛒 ${o.items[k].name} → ${t('To buy')}` : `${o.items[k].name}: ${t('in hand')}`); setTimeout(draw, 250);
     }));
-    // ✓ Bought (anyone): how many, then earliest delivery first; the rest stays in To buy
+    // ✓ Bought (admin, or the seller for their own items): how many, then earliest delivery first; the rest stays in To buy
     $$('[data-bought]').forEach((btn) => (btn.onclick = async () => {
       const [k, key] = btn.dataset.bought.split('|'), r = S._buy?.[k]?.[key]; if (!r) return;
       let n = r.qty;
