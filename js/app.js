@@ -680,9 +680,49 @@ function scoreBadges(c, big = false) {
   }
   return `<span class="scores">${h}</span>`;
 }
+/**
+ * Admin: write off what is left on an account as bad debt. The balance goes to 0 and the account is closed;
+ * the loss is kept in sellers/<sid>/writeoffs (with the open items, so it can be undone) and the customer gets a 🚫 flag.
+ */
+function writeOff(sid, c, a, reason) {
+  if (!isAdmin() || !(a.balance > 0)) return;
+  const b = F.writeBatch(F.db), wcol = F.sellerCol(sid, 'writeoffs'), id = F.newId(wcol), amount = L.round2(a.balance), date = today();
+  b.set(F.doc(wcol, id), { accountId: a.id, customerId: c.id, customerName: c.name, date, amount, reason, queueBefore: a.queue || [], wasInactive: !!a.inactive, recovered: 0, createdAt: Date.now(), by: S.user.uid });
+  const wo = { id, amount, date, reason, recovered: 0 };
+  b.update(F.sellerDoc(sid, 'accounts', a.id), { balance: F.increment(-amount), queue: [], status: 'closed', closedOn: date, writtenOff: wo, ...(a.inactive ? setActive(a, true) : {}) });
+  const ban = c.ban || { reason: `${t('Written off')} ${rmoney(amount)}: ${reason}`, by: sid, byName: S.profile?.name || '', at: date, auto: 'writeoff', writeoffId: id };
+  const score = { score: 0, band: 'risk', parts: null, plan: null, freq: 'weekly', promises: null, capped: '', writtenOff: true, at: date };
+  b.update(F.sellerDoc(sid, 'customers', c.id), { ban, score });
+  for (const h of c.phoneHashes || []) b.set(F.doc(F.db, 'phoneIndex', `${h}_${sid}_${c.id}`), indexDoc(h, sid, { ...c, ban, score }));
+  F.audit(b, S.user.uid, 'write-off', `sellers/${sid}/accounts/${a.id}`, { balance: amount }, { writtenOff: amount, reason });
+  F.commit(b, onWriteError);
+  Object.assign(a, { balance: 0, queue: [], status: 'closed', closedOn: date, writtenOff: wo }); c.ban = ban; c.score = score;
+}
+/** Admin: put a write-off back (only while nothing was recovered). */
+async function undoWriteOff(sid, c, a) {
+  const w = a.writtenOff; if (!isAdmin() || !w || w.recovered > 0) return;
+  const d = await F.getDoc(F.sellerDoc(sid, 'writeoffs', w.id)).catch(() => null), wd = d?.exists() ? d.data() : {};
+  const b = F.writeBatch(F.db), queue = wd.queueBefore || [];
+  b.delete(F.sellerDoc(sid, 'writeoffs', w.id));
+  b.update(F.sellerDoc(sid, 'accounts', a.id), { balance: F.increment(w.amount), queue, status: 'open', closedOn: F.deleteField(), writtenOff: F.deleteField() });
+  const flagOurs = c.ban?.auto === 'writeoff' && c.ban.writeoffId === w.id;
+  if (flagOurs) { b.update(F.sellerDoc(sid, 'customers', c.id), { ban: null }); for (const h of c.phoneHashes || []) b.set(F.doc(F.db, 'phoneIndex', `${h}_${sid}_${c.id}`), indexDoc(h, sid, { ...c, ban: null })); }
+  F.audit(b, S.user.uid, 'write-off-undo', `sellers/${sid}/accounts/${a.id}`, { writtenOff: w.amount }, { balance: w.amount });
+  F.commit(b, onWriteError);
+  Object.assign(a, { balance: L.round2(a.balance + w.amount), queue, status: 'open' }); delete a.writtenOff; delete a.closedOn; if (flagOurs) c.ban = null;
+  rescoreSoon(c.id);
+}
+
 /** Re-compute one customer's score from their accounts, sales, collections and promised dates; share it in the index. */
 async function rescore(cid, sid = S.sid) {
   const c = S.customers[cid]; if (!c || !sid) return null;
+  if (accountsOf(cid).some((a) => a.writtenOff)) { // bad debt written off: score 0 until the write-off is undone
+    const score = { score: 0, band: 'risk', parts: null, plan: null, freq: 'weekly', promises: null, capped: '', writtenOff: true, at: today() };
+    if (c.score?.writtenOff && c.score.at === today()) return c.score;
+    const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'customers', cid), { score });
+    for (const h of c.phoneHashes || []) b.set(F.doc(F.db, 'phoneIndex', `${h}_${sid}_${cid}`), indexDoc(h, sid, { ...c, score }));
+    F.commit(b, () => {}); c.score = score; return score;
+  }
   const w = F.where('customerId', '==', cid);
   const [sales, cols, visits] = await Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'sales'), w)), F.fetchAll(F.query(F.sellerCol(sid, 'collections'), w)), F.fetchAll(F.query(F.sellerCol(sid, 'visits'), w))]);
   const r = L.customerScore({ accounts: accountsOf(cid), sales, collections: cols, promises: visits.filter((v) => v.promiseDate), today: today(), prior: c.prior?.score ?? null });
@@ -1501,18 +1541,20 @@ ${t('Balance')}: ${money(a.balance)} → ${money(expect)}`)) return false;
 
 async function loadAccountData(sid, aid) {
   const w = F.where('accountId', '==', aid);
-  const [sales, collections, returns] = await Promise.all([
+  const [sales, cols, returns, writeoffs] = await Promise.all([
     F.fetchAll(F.query(F.sellerCol(sid, 'sales'), w)),
     F.fetchAll(F.query(F.sellerCol(sid, 'collections'), w)),
     F.fetchAll(F.query(F.sellerCol(sid, 'returns'), w)),
+    F.fetchAll(F.query(F.sellerCol(sid, 'writeoffs'), w)),
   ]);
-  return { sales, collections, returns };
+  // money got back after a write-off is kept apart: it never touches the balance or the open items
+  return { sales, collections: cols.filter((c) => c.kind !== 'recovery'), recoveries: cols.filter((c) => c.kind === 'recovery'), returns, writeoffs };
 }
 
-const typeLabel = (r) => ({ opening: t('Opening balance'), sale: t('Sale'), advance: t('Advance'), collection: t('Collection'), return: t('Return'), discount: t('Discount') }[r.type]);
+const typeLabel = (r) => ({ opening: t('Opening balance'), sale: t('Sale'), advance: t('Advance'), collection: t('Collection'), return: t('Return'), discount: t('Discount'), writeoff: '✖ ' + t('Written off'), recovery: t('Recovered after write-off') }[r.type]);
 const rowDetail = (r) => r.type === 'sale' ? r.ref.items.map((i) => `${i.name} × ${i.qty}`).join(', ') + (r.ref.saleDiscount ? ` (${t('Discount')} ${rmoney(r.ref.saleDiscount)})` : '')
   : r.type === 'return' ? r.ref.items.map((i) => `${i.name} × ${i.qty}`).join(', ')
-  : r.type === 'collection' || r.type === 'advance' ? [modeLabel(r.ref.mode), scrapDetail(r.ref), r.ref.note].filter(Boolean).join(' · ') : r.type === 'discount' ? r.ref.note || '' : '';
+  : r.type === 'collection' || r.type === 'advance' || r.type === 'recovery' ? [modeLabel(r.ref.mode), scrapDetail(r.ref), r.ref.note].filter(Boolean).join(' · ') : r.type === 'discount' || r.type === 'writeoff' ? r.ref.note || r.ref.reason || '' : '';
 
 async function renderAccount(cid, aid) {
   if (needSeller()) return;
@@ -1522,11 +1564,11 @@ async function renderAccount(cid, aid) {
     if (!c || !a) { view.innerHTML = `<div class="empty">${t('Account not found')}</div>`; return; }
     setTitle(`${c.name} · ${a.name}`, `#/customer/${cid}`);
     const data = await loadAccountData(sid, aid);
-    const ledger = L.buildLedger(a.openingBalance, data.sales, data.collections, data.returns);
+    const ledger = L.buildLedger(a.openingBalance, data.sales, [...data.collections, ...data.recoveries], data.returns, data.writeoffs);
     // Self-check: the open items must add up to the balance. If two phones edited this account offline at once,
     // rebuild the open items from the entries (balances are never changed by this).
     const ledgerBal = ledger.length ? ledger.at(-1).balance : L.round2(a.openingBalance || 0);
-    if (navigator.onLine && L.round2(ledgerBal) === L.round2(a.balance) && L.queueDue(a.queue) !== L.round2(Math.max(0, a.balance))) {
+    if (navigator.onLine && !a.writtenOff && L.round2(ledgerBal) === L.round2(a.balance) && L.queueDue(a.queue) !== L.round2(Math.max(0, a.balance))) {
       const op = (a.queue || []).find((q) => q.ref === 'opening');
       const rp = L.replayAccount({ opening: a.openingBalance > 0 ? { amount: a.openingBalance, ratio: op?.ratio ?? L.legacyRatio(S.settings.legacyMarginPct) } : null, sales: data.sales, collections: data.collections, returns: data.returns });
       if (L.queueDue(rp.queue) === L.round2(Math.max(0, a.balance))) {
@@ -1547,7 +1589,7 @@ async function renderAccount(cid, aid) {
       <div class="card balance"><span>${t('Balance due')}</span><b>${money(a.balance)}</b>
         <small>${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${fmtDate(nextDueOf(a))}` : ''}${a.status === 'closed' ? ' · ' + t('Closed') : a.inactive ? ' · ⏸ ' + t('Inactive') + (a.inactiveSince ? ' ' + t('since') + ' ' + fmtDate(a.inactiveSince) : '') : ''}</small>
         <button class="linkbtn obal" id="obal">${Number(a.openingBalance) > 0 ? `${t('Opening balance')}: ${money(a.openingBalance)} ✏️` : `+ ${t('Opening balance')}`}</button></div>
-      <div class="grid2 acctiles">
+      <div class="grid2 acctiles" ${a.writtenOff ? 'hidden' : ''}>
         <a class="tile primary" href="#/collect/${cid}/${aid}">${t('Collection')}</a>
         <a class="tile" href="#/sale/${cid}/${aid}">${t('New sale')}</a>
         <a class="tile" href="#/return/${cid}/${aid}">${t('Return')}</a>
@@ -1561,18 +1603,29 @@ async function renderAccount(cid, aid) {
       <h3>${t('Statement')}</h3>
       <table class="ledger"><thead><tr><th>${t('Date')}</th><th>${t('Details')}</th><th>+</th><th>−</th><th>${t('Balance')}</th></tr></thead><tbody>
       ${ledger.map((r) => `<tr class="${r.type}"><td>${fmtDate(r.date)}</td><td>${typeLabel(r)}<small>${esc(rowDetail(r))}</small>
-        ${r.type === 'collection' || r.type === 'advance' || r.type === 'discount' ? `<button class="x" data-del="${r.ref.id}" title="${t('Delete')}">×</button>` : ''}
+        ${r.type === 'collection' || r.type === 'advance' || r.type === 'discount' || r.type === 'recovery' ? `<button class="x" data-del="${r.ref.id}" title="${t('Delete')}">×</button>` : ''}
         ${r.type === 'sale' && isAdmin() ? `<button class="void" data-void="${r.ref.id}">${t('Void')}</button>` : ''}</td>
-        <td>${r.sign > 0 ? money(r.amount) : ''}</td><td>${r.sign < 0 ? money(r.amount) : ''}</td><td>${money(r.balance)}</td></tr>`).join('')}
+        <td>${r.sign > 0 ? money(r.amount) : ''}</td><td>${r.sign < 0 ? money(r.amount) : r.sign === 0 ? `<small>(${money(r.amount)})</small>` : ''}</td><td>${money(r.balance)}</td></tr>`).join('')}
       </tbody></table>
       <form id="aef" class="card form edbox" hidden>
         <label>${t('Account name')}<input name="an" value="${esc(a.name)}" required maxlength="40"></label>
         <label>${t('Instalment')}<select name="af">${FREQ.map((f) => `<option value="${f}" ${f === (a.frequency || 'weekly') ? 'selected' : ''}>${freqLabel(f)}</option>`).join('')}</select></label>
         <label class="lpo" ${(a.frequency || 'weekly') === 'monthly' ? '' : 'hidden'}>${t('Last paid (old book)')} <small class="muted">(${t('optional')})</small><input name="alp" type="date" max="${today()}" value="${a.lastPaidOld || ''}"></label>
         <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" id="aefX">${t('Cancel')}</button></div></form>
-      <div class="actions"><button class="btn" id="accEd">✏️ ${t('Edit account')}</button>${a.status !== 'closed' ? (a.inactive
+      ${a.writtenOff ? `<div class="card wobox"><b>✖ ${t('Written off as bad debt')}: ${money(a.writtenOff.amount)}</b>
+          <small>${fmtDate(a.writtenOff.date)}${a.writtenOff.reason ? ' · ' + esc(a.writtenOff.reason) : ''}${a.writtenOff.recovered ? ` · ${t('Recovered')} ${money(a.writtenOff.recovered)}` : ''}</small>
+          <form id="recf" class="form" style="margin-top:8px"><label>${t('Money got back from this customer')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" required></label>
+            ${payPicker('rmode', 'cash')}
+            <label>${t('Date')}<input name="date" type="date" value="${today()}" max="${today()}"></label>
+            <button class="btn primary" type="submit">${t('Save money got back')}</button></form>
+          ${isAdmin() && !(a.writtenOff.recovered > 0) ? `<button class="btn small" id="woUndo">↶ ${t('Undo write-off')}</button>` : ''}</div>`
+        : isAdmin() && a.balance > 0 ? `<form id="wof" class="card form wobox" hidden><b>✖ ${t('Write off as bad debt')}: ${money(a.balance)}</b>
+          <p class="small muted">${t('Use only when this money will not come. The balance becomes 0, the account is closed, the loss shows in reports and the customer gets a 🚫 flag that all sellers see.')}</p>
+          <label>${t('Reason')}<input name="reason" required maxlength="120" placeholder="${t('e.g. Not paid for 2 years, moved away')}"></label>
+          <div class="contact"><button class="btn danger" type="submit">✖ ${t('Write off')}</button><button class="btn" type="button" id="wofX">${t('Cancel')}</button></div></form>` : ''}
+      <div class="actions"><button class="btn" id="accEd">✏️ ${t('Edit account')}</button>${isAdmin() && !a.writtenOff && a.balance > 0 ? `<button class="btn danger" id="woBtn">✖ ${t('Write off')}</button>` : ''}${a.writtenOff ? '' : a.status !== 'closed' ? (a.inactive
         ? `<button class="btn" id="actTgl">▶ ${t('Make active')}</button>`
-        : `<button class="btn" id="actTgl">⏸ ${t('Make inactive')}</button>`) : ''}${a.status === 'closed'
+        : `<button class="btn" id="actTgl">⏸ ${t('Make inactive')}</button>`) : ''}${a.writtenOff ? '' : a.status === 'closed'
         ? `<button class="btn" id="reopen">${t('Reopen account')}</button>`
         : `<button class="btn" id="close" ${a.balance > 0 ? 'disabled' : ''}>${t('Close account')}</button>`}</div>
       ${a.balance > 0 && a.status !== 'closed' ? `<p class="muted small">${t('An account can be closed when the balance is zero.')}</p>` : ''}`;
@@ -1610,7 +1663,31 @@ async function renderAccount(cid, aid) {
       toast(t('Saved')); draw();
     };
     $('#obal').onclick = () => editOpening(sid, cid, aid).then((ok) => ok && setTimeout(draw, 300));
-    $('#accOrd').onclick = () => { try { sessionStorage.setItem('orderBack', `#/account/${cid}/${aid}`); } catch {} };
+    const accOrd = $('#accOrd'); if (accOrd) accOrd.onclick = () => { try { sessionStorage.setItem('orderBack', `#/account/${cid}/${aid}`); } catch {} };
+    const woBtn = $('#woBtn'), wof = $('#wof');
+    if (woBtn && wof) {
+      woBtn.onclick = () => { wof.hidden = !wof.hidden; if (!wof.hidden) { wof.scrollIntoView({ block: 'center' }); wof.reason.focus(); } };
+      $('#wofX').onclick = () => { wof.hidden = true; };
+      wof.onsubmit = (e) => {
+        e.preventDefault();
+        const reason = wof.reason.value.trim(); if (!reason) return;
+        if (!confirm(`${t('Write off')} ${money(a.balance)} — ${c.name} (${a.name})?\n${t('The balance becomes 0 and the customer is flagged 🚫.')}`)) return;
+        writeOff(sid, c, a, reason); toast(t('Written off')); setTimeout(draw, 300);
+      };
+    }
+    const recf = $('#recf');
+    if (recf) recf.onsubmit = (e) => {
+      e.preventDefault();
+      const amt = L.round2(num(recf.amt.value)); if (!(amt > 0)) return toast(t('Enter the amount'), true);
+      const mode = pickedMode('rmode', recf), date = recf.date.value || today(), b = F.writeBatch(F.db), ccol = F.sellerCol(sid, 'collections');
+      b.set(F.doc(ccol, F.newId(ccol)), { accountId: aid, customerId: cid, date, amount: amt, kind: 'recovery', mode, ...upiTag(mode), writeoffId: a.writtenOff.id, note: '', allocations: [], profit: 0, createdAt: Date.now(), by: S.user.uid });
+      b.update(F.sellerDoc(sid, 'writeoffs', a.writtenOff.id), { recovered: F.increment(amt) });
+      b.update(F.sellerDoc(sid, 'accounts', aid), { 'writtenOff.recovered': F.increment(amt) });
+      F.commit(b, onWriteError); a.writtenOff = { ...a.writtenOff, recovered: L.round2((a.writtenOff.recovered || 0) + amt) };
+      toast(t('Saved')); setTimeout(draw, 300);
+    };
+    const woUndo = $('#woUndo');
+    if (woUndo) woUndo.onclick = () => { if (confirm(t('Undo this write-off? The balance comes back and the 🚫 flag is removed.'))) { undoWriteOff(sid, c, a); toast(t('Undone')); setTimeout(draw, 300); } };
     $('#waStmt').onclick = () => window.open(`https://wa.me/${L.waNumber(c.phone)}?text=${encodeURIComponent(stmtText())}`, '_blank');
     $('#pdfStmt').onclick = () => makePdf({
       title: `Statement - ${c.name} (${a.name})`, subtitle: `${c.phone || ''}  |  ${fmtDate(today())}`,
@@ -1620,6 +1697,8 @@ async function renderAccount(cid, aid) {
       file: `statement-${c.name}-${a.name}.pdf`,
     });
     $$('[data-del]').forEach((btn) => (btn.onclick = () => {
+      const rec = data.recoveries.find((x) => x.id === btn.dataset.del);
+      if (rec) { if (!confirm(t('Delete this collection of') + ' ' + money(rec.amount) + '?')) return; const bt = F.writeBatch(F.db); removeCollection(bt, sid, rec); F.audit(bt, S.user.uid, 'collection-delete', `sellers/${sid}/collections/${rec.id}`, rec, null); F.commit(bt, onWriteError); setTimeout(draw, 300); return; }
       const col = data.collections.find((x) => x.id === btn.dataset.del);
       if (!col || !confirm(t('Delete this collection of') + ' ' + money(col.amount) + '?')) return;
       const b = F.writeBatch(F.db);
@@ -2284,16 +2363,16 @@ async function renderExpenses(company) {
 // ---------- reports ----------
 async function sellerData(sid, from, to) {
   const rng = (name) => F.fetchAll(F.query(F.sellerCol(sid, name), F.where('date', '>=', from), F.where('date', '<=', to)));
-  const [sales, collections, returns, expenses] = await Promise.all([rng('sales'), rng('collections'), rng('returns'), rng('expenses')]);
-  return { sales, collections, returns, expenses };
+  const [sales, collections, returns, expenses, writeoffs] = await Promise.all([rng('sales'), rng('collections'), rng('returns'), rng('expenses'), rng('writeoffs')]);
+  return { sales, collections, returns, expenses, writeoffs };
 }
 async function sellerFigures(sid, from, to) { return L.sellerReport(await sellerData(sid, from, to)); }
 
 // Profit figures are not shown any more (no purchase prices in the app; the margin-based estimate misled more
 // than it helped). The money logic still keeps them inside the data, so they can come back if costs are entered later.
 const REP_FIELDS = [['salesValue', 'Sales'], ['cashSales', '— Cash sales'], ['collected', 'Collected'], ['collectedCash', '— Cash'], ['collectedUpi', '— UPI'], ['collectedScrap', '— Scrap'],
-  ['discountAll', 'Discounts given'], ['discount', '— on instalments'], ['saleDiscount', '— on sales'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'], ['cashInHand', 'Cash in hand']];
-const repRowCls = (k) => (k === 'cashInHand' ? 'cash' : /Cash$|Upi$|Scrap$|^cashSales$|^discount$|^saleDiscount$/.test(k) ? 'sub' : '');
+  ['discountAll', 'Discounts given'], ['discount', '— on instalments'], ['saleDiscount', '— on sales'], ['writtenOff', 'Written off (bad debt)'], ['recovered', '— got back later'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'], ['cashInHand', 'Cash in hand']];
+const repRowCls = (k) => (k === 'cashInHand' ? 'cash' : k === 'writtenOff' ? 'risk' : /Cash$|Upi$|Scrap$|^cashSales$|^discount$|^saleDiscount$|^recovered$/.test(k) ? 'sub' : '');
 const repLbl = (l) => (l.startsWith('— ') && l !== '— UPI' ? '— ' + t(l.slice(2)) : t(l));
 const shiftDate = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5);
@@ -2459,6 +2538,8 @@ async function renderReport() {
         <tr><td>${t('Discounts given')}</td><td>${money(co.discountAll)}</td></tr>
         <tr class="sub"><td>— ${t('on instalments')}</td><td>${money(co.discount)}</td></tr>
         <tr class="sub"><td>— ${t('on sales')}</td><td>${money(co.saleDiscount)}</td></tr>
+        <tr class="risk"><td>${t('Written off (bad debt)')}</td><td>${money(co.writtenOff)}</td></tr>
+        ${co.recovered ? `<tr class="sub"><td>— ${t('got back later')}</td><td>${money(co.recovered)}</td></tr>` : ''}
         <tr><td>${t('Personal expenses')}</td><td>− ${money(co.personalExpense)}</td></tr>
         <tr><td>${t('Company expenses')}</td><td>− ${money(co.companyExpense)}</td></tr>
         <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.companyExpenseCash)}</td></tr>
@@ -2855,7 +2936,7 @@ async function renderBackup() {
       const users = Object.entries(S.users).map(([uid, u]) => ({ uid, ...u }));
       const keys = [...new Set(users.filter((u) => u.role === 'seller').map((u) => u.sellerKey || u.uid))];
       const holder = (k) => users.filter((u) => (u.sellerKey || u.uid) === k && !u.replaced).sort((a, b) => (a.active === false) - (b.active === false))[0]?.name || k;
-      const per = { customers: [], accounts: [], sales: [], collections: [], returns: [], notes: [], expenses: [], visits: [], orders: [] };
+      const per = { customers: [], accounts: [], sales: [], collections: [], returns: [], notes: [], expenses: [], visits: [], orders: [], writeoffs: [] };
       for (const k of keys) {
         const got = await Promise.all(Object.keys(per).map((c) => F.fetchAll(F.sellerCol(k, c))));
         Object.keys(per).forEach((c, i) => got[i].forEach((d) => per[c].push({ seller: holder(k), ...d })));
@@ -2871,6 +2952,7 @@ async function renderBackup() {
       add('Returns', per.returns.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? 'Cash sale' : cname[x.customerId], account: aname[x.accountId], items: items(x.items), condition: x.condition, credited: x.credited ? 'yes' : 'no', amount: x.amount, cost: x.cost })));
       add('Notes', per.notes.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId] || x.customerName, note: x.text, remindOn: x.dueDate, done: x.done ? 'yes' : 'no' })));
       add('Expenses', per.expenses.map((x) => ({ seller: x.seller, date: x.date, type: x.category, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, note: x.note })));
+      add('Write-offs', per.writeoffs.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId] || x.customerName, account: aname[x.accountId], amount: x.amount, recovered: x.recovered || 0, reason: x.reason })));
       add('Visits', per.visits.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], reason: x.reason, promisedDate: x.promiseDate || '', note: x.note })));
       add('Orders', per.orders.map((x) => ({ seller: x.seller, ordered: when(x.createdAt), customer: x.customerName, items: (x.items || []).map((i) => `${i.name} x${i.qty}`).join('; '), deliveryDate: x.deliveryDate, status: x.status, note: x.note })));
       const [cexp, comp, scrap, sIn, sSales] = await Promise.all([all('companyExpenses'), all('complaints'), all('scrapLosses'), all('scrapIn'), all('scrapSales')]);
@@ -2919,7 +3001,7 @@ function renderAppSettings() {
 
 // ---------- delete all test data (admin) ----------
 const WIPE_TOP = ['stock', 'purchases', 'billPhotos', 'complaints', 'scrapLosses', 'companyExpenses', 'catalog', 'catalogPhotos', 'demand', 'scrapIn', 'scrapSales', 'stockMoves', 'phoneIndex', 'nameMap', 'meals', 'auditLog'];
-const WIPE_BOOK = ['customers', 'accounts', 'sales', 'collections', 'returns', 'notes', 'expenses', 'visits', 'orders', 'routeChanges', 'dayClose', 'meta'];
+const WIPE_BOOK = ['customers', 'accounts', 'sales', 'collections', 'returns', 'notes', 'expenses', 'visits', 'orders', 'routeChanges', 'dayClose', 'meta', 'writeoffs'];
 async function wipeTestData() {
   if (!isAdmin()) return;
   if (!navigator.onLine) return toast(t('Connect to the internet first'), true);
@@ -3308,6 +3390,11 @@ const KIND_LABEL = { collection: 'Collection', advance: 'Advance', cash: 'Cash s
 /** Remove a collection or discount from its account (balance and open items put back). */
 function removeCollection(b, sid, col) {
   b.delete(F.sellerDoc(sid, 'collections', col.id));
+  if (col.kind === 'recovery') { // only the written-off record changes; the balance stays 0
+    if (col.writeoffId) b.update(F.sellerDoc(sid, 'writeoffs', col.writeoffId), { recovered: F.increment(-col.amount) });
+    if (col.accountId) b.update(F.sellerDoc(sid, 'accounts', col.accountId), { 'writtenOff.recovered': F.increment(-col.amount) });
+    return;
+  }
   if (col.kind === 'collection' && col.accountId) setTimeout(() => refreshLastPaid(sid, col.accountId), 600);
   if (col.mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', col.id));
   else if (col.kind !== 'discount' && col.customerId) b.update(F.sellerDoc(sid, 'customers', col.customerId), { [`modeCounts.${col.mode === 'upi' ? 'upi' : 'cash'}`]: F.increment(-1) });
@@ -3328,7 +3415,12 @@ async function closedReminder(sid, dates) {
 function editCollection(sid, col, patch) {
   const b = F.writeBatch(F.db), upd = {}, a = S.accounts[col.accountId];
   const amt = patch.amount != null ? L.round2(patch.amount) : col.amount;
-  if (col.kind !== 'cash' && amt !== col.amount) {
+  if (col.kind === 'recovery' && amt !== col.amount) {
+    if (amt <= 0) { removeCollection(b, sid, col); F.audit(b, S.user.uid, 'collection-delete', `sellers/${sid}/collections/${col.id}`, col, null); F.commit(b, onWriteError); return 'deleted'; }
+    upd.amount = amt;
+    if (col.writeoffId) b.update(F.sellerDoc(sid, 'writeoffs', col.writeoffId), { recovered: F.increment(L.round2(amt - col.amount)) });
+    if (col.accountId) b.update(F.sellerDoc(sid, 'accounts', col.accountId), { 'writtenOff.recovered': F.increment(L.round2(amt - col.amount)) });
+  } else if (col.kind !== 'cash' && amt !== col.amount) {
     if (amt <= 0) { removeCollection(b, sid, col); F.audit(b, S.user.uid, 'collection-delete', `sellers/${sid}/collections/${col.id}`, col, null); F.commit(b, onWriteError); return 'deleted'; }
     if (!a) { toast(t('Account not found'), true); return false; }
     const r = L.allocate(L.reverseAllocations(a.queue || [], col.allocations), amt, col.kind === 'advance' ? col.saleId : null);

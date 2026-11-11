@@ -109,11 +109,13 @@ export function discountLines(lines, discount) {
  * Build a running ledger for one account.
  * entries: sales, collections (incl. advances) and credited returns.
  */
-export function buildLedger(openingBalance, sales, collections, returns) {
+export function buildLedger(openingBalance, sales, collections, returns, writeoffs = []) {
   const rows = [];
   if (Number(openingBalance) > 0) rows.push({ date: '', type: 'opening', amount: Number(openingBalance), sign: 1 });
   for (const s of sales) rows.push({ date: s.date, at: s.createdAt || 0, type: 'sale', amount: s.saleValue, sign: 1, ref: s });
-  for (const c of collections) rows.push({ date: c.date, at: (c.createdAt || 0) + (c.kind === 'advance' ? 1 : c.kind === 'discount' ? 2 : 0), type: c.kind === 'advance' ? 'advance' : c.kind === 'discount' ? 'discount' : 'collection', amount: c.amount, sign: -1, ref: c });
+  // money received after a write-off does not touch the balance (it is already 0): shown with sign 0
+  for (const c of collections) rows.push({ date: c.date, at: (c.createdAt || 0) + (c.kind === 'advance' ? 1 : c.kind === 'discount' ? 2 : 0), type: c.kind === 'advance' ? 'advance' : c.kind === 'discount' ? 'discount' : c.kind === 'recovery' ? 'recovery' : 'collection', amount: c.amount, sign: c.kind === 'recovery' ? 0 : -1, ref: c });
+  for (const w of writeoffs) rows.push({ date: w.date, at: w.createdAt || 0, type: 'writeoff', amount: w.amount, sign: -1, ref: w });
   for (const r of returns) if (r.credited) rows.push({ date: r.date, at: r.createdAt || 0, type: 'return', amount: r.amount, sign: -1, ref: r });
   rows.sort((a, b) => (a.date === b.date ? (a.at || 0) - (b.at || 0) : a.date < b.date ? -1 : 1));
   let bal = 0;
@@ -139,7 +141,7 @@ export function preferredMode(counts) { // scrap is never the default
  * Report figures for one seller over a period.
  * Input arrays are already filtered to the date range.
  */
-export function sellerReport({ sales = [], collections = [], returns = [], expenses = [] }) {
+export function sellerReport({ sales = [], collections = [], returns = [], expenses = [], writeoffs = [] }) {
   const salesValue = round2(sales.reduce((s, x) => s + x.saleValue, 0));
   const salesCost = round2(sales.reduce((s, x) => s + x.cost, 0));
   const cashSales = round2(sales.filter((x) => x.cash).reduce((s, x) => s + x.saleValue, 0));
@@ -151,6 +153,9 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   const paid = collections.filter((c) => c.kind !== 'discount');
   const discount = round2(collections.filter((c) => c.kind === 'discount').reduce((s, c) => s + c.amount, 0));
   const saleDiscount = round2(sales.reduce((s, x) => s + (Number(x.saleDiscount) || 0), 0)); // already out of salesValue
+  // bad debt written off (not money); money got back later is in "collected" as kind 'recovery'
+  const writtenOff = round2(writeoffs.reduce((s, w) => s + (Number(w.amount) || 0), 0));
+  const recovered = round2(collections.filter((c) => c.kind === 'recovery').reduce((s, c) => s + c.amount, 0));
   const collected = round2(paid.reduce((s, c) => s + c.amount, 0));
   const realised = round2(collections.reduce((s, c) => s + (c.profit || 0), 0));
   const expense = round2(expenses.reduce((s, e) => s + e.amount, 0));
@@ -158,7 +163,7 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   const collectedCash = sumBy(collections, 'cash'), collectedUpi = sumBy(collections, 'upi'), collectedScrap = sumBy(collections, 'scrap');
   const expenseCash = sumBy(expenses, 'cash'), expenseUpi = sumBy(expenses, 'upi');
   return {
-    salesValue, cashSales, returnValue, collected, collectedCash, collectedUpi, collectedScrap, discount, saleDiscount, discountAll: round2(discount + saleDiscount), booked, realised,
+    salesValue, cashSales, returnValue, collected, collectedCash, collectedUpi, collectedScrap, discount, saleDiscount, discountAll: round2(discount + saleDiscount), writtenOff, recovered, booked, realised,
     expense, expenseCash, expenseUpi, cashInHand: round2(collectedCash - expenseCash),
     net: round2(realised - expense), salesCount: sales.length,
   };
@@ -180,7 +185,7 @@ export function companyReport(sellerReports, companyExpenses = [], scrapLosses =
   const realised = sum('realised');
   const personal = sum('expense');
   return {
-    salesValue: sum('salesValue'), cashSales: sum('cashSales'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'), discount: sum('discount'), saleDiscount: sum('saleDiscount'), discountAll: sum('discountAll'),
+    salesValue: sum('salesValue'), cashSales: sum('cashSales'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'), discount: sum('discount'), saleDiscount: sum('saleDiscount'), discountAll: sum('discountAll'), writtenOff: sum('writtenOff'), recovered: sum('recovered'),
     booked: sum('booked'), realised, personalExpense: personal, companyExpense, companyExpenseCash, companyExpenseUpi, scrap,
     scrapSold, scrapSoldCredited, scrapGain,
     cashInHand: round2(sum('cashInHand') - companyExpenseCash + scrapSoldCash),

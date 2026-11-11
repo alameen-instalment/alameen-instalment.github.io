@@ -487,3 +487,10 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .undobar { position: fixed; left: 12px; right: 12px; bottom: 76px; z-index: 60; display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: #1a2421; color: #fff; padding: 10px 12px; border-radius: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
 .undobar .btn { width: auto; background: #fff; color: #1a2421; }
+/* v37: write-off */
+.wobox { border-color: #D2453A; }
+.wobox > b { color: #D2453A; display: block; }
+.wobox > small { color: var(--muted); display: block; margin-top: 2px; }
+.ledger tr.writeoff td { color: #D2453A; }
+.ledger tr.recovery td { color: var(--muted); }
+.acctiles[hidden] { display: none; }
