@@ -314,6 +314,7 @@ const routes = [
   [/^#\/close-day$/, renderCloseDay],
   [/^#\/collections$/, renderCollections],
   [/^#\/upi$/, renderUpiSetup],
+  [/^#\/items$/, renderItemNames],
   [/^#\/cash-sale$/, renderCashSale],
   [/^#\/catalog$/, renderCatalog],
   [/^#\/catalog-edit\/([\w-]+)$/, renderCatalogEdit],
@@ -2716,6 +2717,7 @@ function renderMenu() {
     <li><a href="#/complaints">🛠️ ${t('Complaint items')} (${Object.keys(S.complaints).length})</a></li>
     <li><a href="#/shop-link">🛍️ ${t('Shop link')}</a></li>
     ${S.sid ? `<li><a href="#/upi">📲 ${t('My UPI')}</a></li>` : ''}
+    ${S.sid ? `<li><a href="#/items">🏷️ ${t('Item names')}</a></li>` : ''}
     ${isAdmin() ? `<li><a href="#/company-expenses">🏢 ${t('Company expenses')}</a></li>
       <li><a href="#/scrap">♻️ ${t('Scrap')}</a></li>
       <li><a href="#/catalog">🛍️ ${t('Shop catalog')}</a></li>
@@ -3490,6 +3492,55 @@ function bindUpiQr(root, { amount, note, visible }) {
     pick: pickedUpi('upito', root), onPick: (v) => { const r = root.querySelector(`input[name=upito][value="${CSS.escape(v)}"]`); if (r) r.checked = true; } });
   refresh();
   return refresh;
+}
+
+// ---------- item names remembered from sales (suggestions + last instalment price) ----------
+function renderItemNames() {
+  setTitle(t('Item names'), '#/menu');
+  if (needSeller()) return;
+  const sid = S.sid;
+  let editing = null; // nameKey being edited
+  view.innerHTML = sellerBar() + `<p class="muted small">${t('Names and prices remembered from your sales. They are only suggestions when you type an item; old sales do not change.')}</p>
+    <div class="toolbar"><input id="iq" type="search" placeholder="${t('Search')}"></div><div class="muted small" id="icount"></div><ul class="list" id="ilist"></ul>`;
+  bindSellerBar();
+  const items = () => (S.itemNames || []).map((n) => { const k = L.nameKey(n); return { name: n, k, price: S.itemPrices[k] }; }).sort((a, b) => a.name.localeCompare(b.name));
+  const write = (fn) => { const b = F.writeBatch(F.db); fn(b); F.commit(b, onWriteError); };
+  const draw = () => {
+    const q = ($('#iq').value || '').trim().toLowerCase(), all = items(), list = all.filter((x) => x.name.toLowerCase().includes(q));
+    $('#icount').textContent = `${list.length} / ${all.length}`;
+    $('#ilist').innerHTML = list.map((x) => x.k === editing
+      ? `<li class="card"><form class="form" data-ie="${x.k}"><label>${t('Item')}<input name="n" value="${esc(x.name)}" required></label>
+          <label>${t('Price each')}<input name="p" type="number" step="any" min="0" inputmode="decimal" value="${x.price ?? ''}"></label>
+          <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" data-ix>${t('Cancel')}</button></div></form></li>`
+      : `<li class="card"><div class="row" style="padding:0"><div><b>${esc(x.name)}</b></div><div class="amt">${x.price ? money(x.price) : '–'}</div></div>
+          <div class="contact"><button class="btn small" data-ied="${x.k}">✏️ ${t('Edit')}</button><button class="btn small danger" style="width:auto" data-idel="${x.k}">× ${t('Delete')}</button></div></li>`).join('')
+      || `<li class="muted">${t('No item names yet. They are added when you save a sale.')}</li>`;
+    $$('[data-ied]').forEach((b) => (b.onclick = () => { editing = b.dataset.ied; draw(); }));
+    $$('[data-ix]').forEach((b) => (b.onclick = () => { editing = null; draw(); }));
+    $$('[data-idel]').forEach((b) => (b.onclick = () => {
+      const x = all.find((i) => i.k === b.dataset.idel); if (!x || !confirm(`${t('Delete this name from the suggestions?')}\n${x.name}`)) return;
+      write((bt) => { bt.update(F.sellerDoc(sid, 'meta', 'items'), { [`i_${x.k}`]: F.deleteField() }); F.audit(bt, S.user.uid, 'item-name', `sellers/${sid}/meta/items`, { name: x.name, price: x.price ?? null }, null); });
+      S.itemNames = S.itemNames.filter((n) => L.nameKey(n) !== x.k); delete S.itemPrices[x.k]; toast(t('Deleted')); draw();
+    }));
+    $$('[data-ie]').forEach((f) => (f.onsubmit = (e) => {
+      e.preventDefault();
+      const x = all.find((i) => i.k === f.dataset.ie), name = f.n.value.trim().replace(/\s+/g, ' '), price = L.round2(num(f.p.value));
+      if (!x || !name) return;
+      const k2 = L.nameKey(name), clash = k2 !== x.k && all.some((i) => i.k === k2);
+      if (clash && !confirm(t('This name is already in the list. Join the two into one?'))) return;
+      write((bt) => {
+        const upd = { [`i_${k2}`]: { name, price: price || null, at: Date.now() } };
+        if (k2 !== x.k) upd[`i_${x.k}`] = F.deleteField();
+        bt.update(F.sellerDoc(sid, 'meta', 'items'), upd);
+        F.audit(bt, S.user.uid, 'item-name', `sellers/${sid}/meta/items`, { name: x.name, price: x.price ?? null }, { name, price: price || null });
+      });
+      S.itemNames = [...S.itemNames.filter((n) => { const kk = L.nameKey(n); return kk !== x.k && kk !== k2; }), name];
+      if (k2 !== x.k) delete S.itemPrices[x.k];
+      S.itemPrices[k2] = price || null; editing = null; toast(t('Saved')); draw();
+    }));
+  };
+  $('#iq').oninput = draw;
+  draw();
 }
 
 function renderUpiSetup() {

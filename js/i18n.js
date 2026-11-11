@@ -1,5 +1,11 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Search': 'തിരയുക',
+  'Item names': 'ഐറ്റം പേരുകൾ',
+  'Names and prices remembered from your sales. They are only suggestions when you type an item; old sales do not change.': 'നിങ്ങളുടെ സെയിലുകളിൽ നിന്ന് ആപ്പ് ഓർത്തുവെച്ച പേരുകളും വിലകളും. ഐറ്റം ടൈപ്പ് ചെയ്യുമ്പോൾ നിർദ്ദേശമായി മാത്രം വരും; പഴയ സെയിലുകൾ മാറില്ല.',
+  'No item names yet. They are added when you save a sale.': 'ഇതുവരെ ഐറ്റം പേരുകളില്ല. സെയിൽ സേവ് ചെയ്യുമ്പോൾ ചേരും.',
+  'Delete this name from the suggestions?': 'ഈ പേര് നിർദ്ദേശങ്ങളിൽ നിന്ന് ഡിലീറ്റ് ചെയ്യണോ?',
+  'This name is already in the list. Join the two into one?': 'ഈ പേര് ലിസ്റ്റിൽ നേരത്തേ ഉണ്ട്. രണ്ടും ഒന്നാക്കണോ?',
   'Undo': 'തിരുത്തുക',
   'Undone': 'പഴയപോലെയാക്കി',
   'on instalments': 'അടവിൽ',
