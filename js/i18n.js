@@ -1,5 +1,16 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'on instalments': 'അടവിൽ',
+  'on sales': 'വിൽപ്പനയിൽ',
+  'Cash discount ₹': 'ക്യാഷ് ഡിസ്കൗണ്ട് ₹',
+  'To pay': 'അടയ്ക്കേണ്ടത്',
+  'This number is your customer': 'ഈ നമ്പർ നിങ്ങളുടെ കസ്റ്റമറുടേതാണ്:',
+  'Better to enter it as a sale in their account (paid now as advance), so it shows in their history.': 'ഇത് അവരുടെ അക്കൗണ്ടിൽ സെയിലായി (ഇപ്പോൾ തന്ന പണം അഡ്വാൻസായി) ഇടുന്നതാണ് നല്ലത്; അപ്പോൾ അവരുടെ ഹിസ്റ്ററിയിൽ കാണും.',
+  'Sale in this account': 'ഈ അക്കൗണ്ടിൽ സെയിൽ',
+  'Discount ₹': 'ഡിസ്കൗണ്ട് ₹',
+  'optional, e.g. cash price': 'നിർബന്ധമില്ല, ഉദാ: ക്യാഷ് വില',
+  'Sale value': 'സെയിൽ തുക',
+  'Paid in full now': 'മുഴുവൻ തുകയും ഇപ്പോൾ അടച്ചു',
   'Promised today': 'ഇന്ന് തരാമെന്ന് പറഞ്ഞു',
   'Promise broken': 'വാക്ക് തെറ്റി',
   'Promised to pay today': 'ഇന്ന് തരാമെന്ന് വാക്ക് തന്നവർ',

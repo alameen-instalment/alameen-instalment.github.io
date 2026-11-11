@@ -1423,7 +1423,7 @@ async function loadAccountData(sid, aid) {
 }
 
 const typeLabel = (r) => ({ opening: t('Opening balance'), sale: t('Sale'), advance: t('Advance'), collection: t('Collection'), return: t('Return'), discount: t('Discount') }[r.type]);
-const rowDetail = (r) => r.type === 'sale' ? r.ref.items.map((i) => `${i.name} × ${i.qty}`).join(', ')
+const rowDetail = (r) => r.type === 'sale' ? r.ref.items.map((i) => `${i.name} × ${i.qty}`).join(', ') + (r.ref.saleDiscount ? ` (${t('Discount')} ${rmoney(r.ref.saleDiscount)})` : '')
   : r.type === 'return' ? r.ref.items.map((i) => `${i.name} × ${i.qty}`).join(', ')
   : r.type === 'collection' || r.type === 'advance' ? [modeLabel(r.ref.mode), scrapDetail(r.ref), r.ref.note].filter(Boolean).join(' · ') : r.type === 'discount' ? r.ref.note || '' : '';
 
@@ -1608,10 +1608,10 @@ const toSaleLines = (rows) => rows.filter((l) => l.name.trim() && l.qty > 0 && l
 function rememberItems(b, sid, lines) {
   const upd = {};
   for (const l of lines) {
-    const k = L.nameKey(l.name);
-    if (S.itemPrices[k] === l.price && (S.itemNames || []).includes(l.name)) continue;
-    upd[`i_${k}`] = { name: l.name, price: l.price, at: Date.now() };
-    S.itemPrices[k] = l.price; if (!S.itemNames.some((n) => L.nameKey(n) === k)) S.itemNames.push(l.name);
+    const k = L.nameKey(l.name), price = l.listPrice ?? l.price; // a discounted sale still remembers the instalment price
+    if (S.itemPrices[k] === price && (S.itemNames || []).includes(l.name)) continue;
+    upd[`i_${k}`] = { name: l.name, price, at: Date.now() };
+    S.itemPrices[k] = price; if (!S.itemNames.some((n) => L.nameKey(n) === k)) S.itemNames.push(l.name);
   }
   if (Object.keys(upd).length) b.set(F.sellerDoc(sid, 'meta', 'items'), upd, { merge: true });
 }
@@ -1658,7 +1658,10 @@ function renderSale(cid, aid) {
   setTitle(`${t('New sale')} · ${c.name}`, true);
   let order = null;
   try { const o = JSON.parse(sessionStorage.getItem('saleOrder') || 'null'); if (o && o.customerId === cid) order = o; } catch {}
-  const rows = order ? order.items.map((i) => ({ name: i.name, qty: Number(i.qty) || 1, price: Number(lastPrice(i.name)) || 0 })) : [];
+  let draft = null; // items brought over from the cash sale screen (an existing customer paying now)
+  try { const d = JSON.parse(sessionStorage.getItem('saleDraft') || 'null'); sessionStorage.removeItem('saleDraft'); if (d && d.cid === cid && Date.now() - d.at < 3600e3) draft = d; } catch {}
+  const rows = draft ? draft.rows.map((r) => ({ name: r.name, qty: Number(r.qty) || 1, price: Number(r.price) || 0 }))
+    : order ? order.items.map((i) => ({ name: i.name, qty: Number(i.qty) || 1, price: Number(lastPrice(i.name)) || 0 })) : [];
   const [perN, perW] = PER[a.frequency] || PER.weekly;
   const warns = riskWarnings(c);
   view.innerHTML = `${warns.length ? `<div class="banner warn"><b>⚠ ${t('Check before giving')}</b>${warns.map((w) => `<div class="small">${w}</div>`).join('')}</div>` : ''}
@@ -1666,24 +1669,29 @@ function renderSale(cid, aid) {
     <div class="card form"><small class="muted">${esc(a.name)} · ${t('Balance')} ${money(a.balance)}</small>
       <div id="lines"></div>
       <div class="row total"><span>${t('Total')}</span><b id="total">₹0</b></div>
-      <div class="two"><label>${t('Advance received')}<input id="adv" type="number" step="any" min="0" inputmode="decimal" placeholder="0"></label>
+      <label>${t('Discount ₹')} <small class="muted">(${t('optional, e.g. cash price')})</small><input id="sdisc" type="number" step="any" min="0" inputmode="decimal" placeholder="0" value="${draft?.discount || ''}"></label>
+      <div class="row total" id="netRow" hidden><span>${t('Sale value')}</span><b id="net">₹0</b></div>
+      <div class="two"><label>${t('Advance received')}<input id="adv" type="number" step="any" min="0" inputmode="decimal" placeholder="0" value="${draft?.advance || ''}"></label>
       <label>${t('Date')}<input id="sdate" type="date" value="${today()}" max="${today()}"></label></div>
       <label>${t('Advance paid by')}</label>${payPicker('advMode', L.preferredMode(c.modeCounts))}
       ${upiQrBoxHtml()}
       <div class="calcbox" id="calc"></div>
       <button class="btn primary" id="saveSale">${t('Save sale')}</button></div>`;
   let tot = 0;
+  const sdisc = () => Math.max(0, Math.min(L.round2(num($('#sdisc').value)), tot)), net = () => L.round2(tot - sdisc());
+  if (draft?.mode === 'upi') { const r = $('input[name=advMode][value=upi]'); if (r) r.checked = true; }
   const calc = () => {
-    const adv = Math.min(num($('#adv').value), tot), rest = L.round2(tot - adv);
-    $('#total').textContent = money(tot);
-    $('#calc').innerHTML = tot ? `<div class="kv"><span>${t('Balance of this sale')}</span><b>${money(rest)}</b></div>
+    const nv = net(), adv = Math.min(num($('#adv').value), nv), rest = L.round2(nv - adv);
+    $('#total').textContent = money(tot); $('#netRow').hidden = !sdisc(); $('#net').textContent = money(nv);
+    $('#calc').innerHTML = tot ? `${rest <= 0 && adv > 0 ? `<div class="kv"><b>✓ ${t('Paid in full now')}</b></div>` : ''}<div class="kv"><span>${t('Balance of this sale')}</span><b>${money(rest)}</b></div>
       <div class="kv"><span>${t('New account balance')}</span><b>${money(L.round2(a.balance + rest))}</b></div>
       ${rest > 0 ? `<div class="kv small"><span>${t('To finish in a year')}</span><span>${money(Math.ceil(rest / perN))} / ${t(perW)}</span></div>` : ''}` : '';
   };
-  const advQr = bindUpiQr(view, { amount: () => Math.min(num($('#adv').value), tot || Infinity), note: () => `${APP_NAME} - ${c.name}`, visible: () => pickedMode('advMode') === 'upi' });
+  const advQr = bindUpiQr(view, { amount: () => Math.min(num($('#adv').value), net() || Infinity), note: () => `${APP_NAME} - ${c.name}`, visible: () => pickedMode('advMode') === 'upi' });
   $$('input[name=advMode]').forEach((r) => (r.onchange = advQr));
   mountLines($('#lines'), rows, (v) => { tot = v; calc(); advQr(); });
   $('#adv').oninput = () => { calc(); advQr(); };
+  $('#sdisc').oninput = () => { calc(); advQr(); };
   $('#saveSale').onclick = () => {
     const lines = toSaleLines(rows);
     if (!lines.length) return toast(t('Enter at least one item with quantity and price'), true);
@@ -1691,12 +1699,12 @@ function renderSale(cid, aid) {
     if (rows.some((l) => l.name.trim() && !(l.qty >= 1))) return toast(t('Enter the quantity of every item'), true);
     if ($('#saveSale').disabled) return;
     $('#saveSale').disabled = true;
-    const { value, cost } = L.saleTotals(lines);
+    const { cost } = L.saleTotals(lines), D = L.discountLines(lines, sdisc()), value = D.value;
     const adv = Math.min(num($('#adv').value), value);
     const date = $('#sdate').value || today();
     const b = F.writeBatch(F.db), scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now();
-    b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: lines, saleValue: value, cost, advance: adv, creditedValue: 0, creditedCost: 0, costEstimated: true, createdAt: now, by: S.user.uid });
-    rememberItems(b, sid, lines);
+    b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: D.lines, saleValue: value, cost, advance: adv, ...(D.discount > 0 ? { saleDiscount: D.discount, listValue: D.listValue } : {}), creditedValue: 0, creditedCost: 0, costEstimated: true, createdAt: now, by: S.user.uid });
+    rememberItems(b, sid, D.lines);
     let queue = L.addSaleToQueue(a.queue || [], saleId, date, value, cost);
     if (adv > 0) {
       const r = L.allocate(queue, adv, saleId), advMode = pickedMode('advMode');
@@ -1813,14 +1821,15 @@ const payTotals = (pays) => pays.filter((p) => p.amount > 0).map((p) => `${modeL
 const last10 = (p) => String(p || '').replace(/\D/g, '').slice(-10);
 function cashReceiptText(sale, pays) {
   return [`*${APP_NAME}*`, `🛒 ${t('Cash sale')} · ${fmtDate(sale.date)}`, sale.buyerName || '', '',
-    ...sale.items.map((i) => `${i.name} × ${i.qty} — ${money(i.price * i.qty)}`), '',
+    ...sale.items.map((i) => `${i.name} × ${i.qty} — ${money((i.listPrice ?? i.price) * i.qty)}`), '',
+    ...(sale.saleDiscount ? [`${t('Discount')}: − ${money(sale.saleDiscount)}`] : []),
     `*${t('Total')}: ${money(sale.saleValue)}*`, `${t('Paid')}: ${payTotals(pays)}`, t('Thank you')].filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n');
 }
 
 /** Write a cash sale (paid in full) into the batch. Returns the sale id. */
-function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone }) {
+function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone, discount = 0, listValue = value }) {
   const scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now();
-  b.set(F.doc(scol, saleId), { accountId: null, customerId: null, cash: true, buyerName: name || '', buyerPhone: phone || '', date, items: lines, saleValue: value, cost, advance: value, creditedValue: 0, creditedCost: 0, costEstimated: true, createdAt: now, by: S.user.uid });
+  b.set(F.doc(scol, saleId), { accountId: null, customerId: null, cash: true, buyerName: name || '', buyerPhone: phone || '', date, items: lines, saleValue: value, cost, advance: value, ...(discount > 0 ? { saleDiscount: discount, listValue } : {}), creditedValue: 0, creditedCost: 0, costEstimated: true, createdAt: now, by: S.user.uid });
   rememberItems(b, sid, lines);
   const ccol = F.sellerCol(sid, 'collections');
   L.cashPayments(value, cost, pays).forEach((p, k) => {
@@ -1842,7 +1851,7 @@ function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone }) 
 function applyPendingSale(b, sid, cid, aid, acc, pend, custName) {
   const scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now(), date = pend.date || today();
   const pays = pend.pays.filter((p) => p.amount > 0), paid = L.round2(pays.reduce((s, p) => s + p.amount, 0));
-  b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: pend.lines, saleValue: pend.value, cost: pend.cost, advance: paid, creditedValue: 0, creditedCost: 0, fromCashSale: true, costEstimated: true, createdAt: now, by: S.user.uid });
+  b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: pend.lines, saleValue: pend.value, cost: pend.cost, advance: paid, ...(pend.discount > 0 ? { saleDiscount: pend.discount, listValue: pend.listValue } : {}), creditedValue: 0, creditedCost: 0, fromCashSale: true, costEstimated: true, createdAt: now, by: S.user.uid });
   rememberItems(b, sid, pend.lines);
   let queue = L.addSaleToQueue(acc.queue || [], saleId, date, pend.value, pend.cost);
   const ccol = F.sellerCol(sid, 'collections');
@@ -1871,8 +1880,11 @@ function renderCashSale() {
     <div class="card form" id="csf">
       <div id="lines"></div>
       <div class="row total"><span>${t('Total')}</span><b id="total">₹0</b></div>
+      <label>${t('Cash discount ₹')}<input id="cdisc" type="number" step="any" min="0" inputmode="decimal" placeholder="0"></label>
+      <div class="row total" id="netRow" hidden><span>${t('To pay')}</span><b id="net">₹0</b></div>
       <div class="two"><label>${t('Name (optional)')}<input id="bname" autocomplete="off"></label>
         <label>${t('Phone (optional)')}<input id="bphone" type="tel" inputmode="tel" autocomplete="off"></label></div>
+      <div id="custHint"></div>
       <label>${t('Paid')}</label>
       <div class="two"><label>${t('Cash')}<input id="pcash" type="number" step="any" min="0" inputmode="decimal"></label>
         <label>UPI<input id="pupi" type="number" step="any" min="0" inputmode="decimal"></label></div>
@@ -1883,7 +1895,8 @@ function renderCashSale() {
       <div id="payInfo" class="small"></div>
       <label>${t('Date')}<input id="sdate" type="date" value="${today()}" max="${today()}"></label>
       <button class="btn primary" id="saveCash">${t('Save cash sale')}</button></div>`;
-  const value = () => tot;
+  const disc = () => Math.max(0, Math.min(L.round2(num($('#cdisc').value)), tot));
+  const value = () => L.round2(tot - disc());
   const scrapItems = () => $$('#slines .scrapline').map((r) => ({ type: $('[name=st]', r).value, value: L.round2(num($('[name=sv]', r).value)) })).filter((x) => x.value > 0);
   const scrapTotal = () => L.round2(scrapItems().reduce((s, x) => s + x.value, 0));
   const pays = () => [{ mode: 'cash', amount: L.round2(num($('#pcash').value)) }, { mode: 'upi', amount: L.round2(num($('#pupi').value)), ...upiTag('upi', pickedUpi('upito')) }, { mode: 'scrap', amount: scrapTotal(), scrapItems: scrapItems() }];
@@ -1894,7 +1907,23 @@ function renderCashSale() {
       : bal > 0 ? `<span class="warnline">${t('Paid')} ${money(p)} · ${t('Balance')} ${money(bal)} — ${t('a balance needs a customer account')}</span>` : `✓ ${t('Paid in full')}`;
   };
   const refill = () => { if (!cashTouched) $('#pcash').value = Math.max(0, L.round2(value() - num($('#pupi').value) - scrapTotal())) || ''; info(); };
-  const total = () => { $('#total').textContent = money(value()); refill(); };
+  const total = () => { $('#total').textContent = money(tot); $('#netRow').hidden = !disc(); $('#net').textContent = money(value()); refill(); };
+  $('#cdisc').oninput = total;
+  // the phone of an existing customer: offer to put the sale into their account instead
+  const hint = () => {
+    const ph = last10($('#bphone').value), hits = ph.length === 10 ? Object.values(S.customers).filter((c) => phonesOf(c).some((x) => last10(x.number) === ph)) : [];
+    $('#custHint').innerHTML = hits.map((c) => `<div class="banner"><b>👤 ${t('This number is your customer')} ${esc(c.name)}</b>
+      <span class="small">${t('Better to enter it as a sale in their account (paid now as advance), so it shows in their history.')}</span>
+      <div class="contact"><button type="button" class="btn small primary" data-tocust="${c.id}">${t('Sale in this account')} · ${esc(c.name)}</button></div></div>`).join('');
+    $$('[data-tocust]').forEach((btn) => (btn.onclick = () => {
+      const cid = btn.dataset.tocust, accs = accountsOf(cid).filter((a) => a.status !== 'closed'), acc = accs[0] || accountsOf(cid)[0];
+      if (!acc) return go(`#/customer/${cid}`);
+      const cash = num($('#pcash').value), upi = num($('#pupi').value);
+      try { sessionStorage.setItem('saleDraft', JSON.stringify({ cid, rows: rows.filter((r) => r.name.trim()), discount: disc(), advance: L.round2(cash + upi), mode: upi > cash ? 'upi' : 'cash', at: Date.now() })); } catch {}
+      go(`#/sale/${cid}/${acc.id}`);
+    }));
+  };
+  $('#bphone').oninput = hint;
   const bindS = () => { $$('#slines [name=sv]').forEach((i) => (i.oninput = refill)); $$('#slines [data-srm]').forEach((b) => (b.onclick = () => { if ($$('#slines .scrapline').length > 1) b.parentElement.remove(); refill(); })); };
   $('#addS').onclick = () => { $('#slines').insertAdjacentHTML('beforeend', scrapLineHtml()); bindS(); };
   $('#pcash').oninput = () => { cashTouched = true; info(); };
@@ -1907,20 +1936,20 @@ function renderCashSale() {
     if (!lines.length) return toast(t('Enter at least one item with quantity and price'), true);
     if (rows.some((l) => l.name.trim() && !(l.price > 0))) return toast(t('Enter the price of every item'), true);
     if (rows.some((l) => l.name.trim() && !(l.qty >= 1))) return toast(t('Enter the quantity of every item'), true);
-    const { value: v, cost } = L.saleTotals(lines), p = pays(), paid = paidNow(), date = $('#sdate').value || today();
+    const { cost } = L.saleTotals(lines), D = L.discountLines(lines, disc()), v = D.value, p = pays(), paid = paidNow(), date = $('#sdate').value || today();
     const name = $('#bname').value.trim(), phone = $('#bphone').value.trim();
     if (paid > v + 0.005) return toast(t('Paid is more than the total'), true);
     if (paid < v - 0.005) {
       if (!confirm(`${t('Balance')} ${money(L.round2(v - paid))}.\n${t('A balance needs a customer account. Add this buyer as a customer now? The sale and what was paid go into their account.')}`)) return;
-      try { sessionStorage.setItem('pendingCash', JSON.stringify({ lines, value: v, cost, pays: p.filter((x) => x.amount > 0), date, name, phone, at: Date.now() })); } catch {}
+      try { sessionStorage.setItem('pendingCash', JSON.stringify({ lines: D.lines, value: v, cost, discount: D.discount, listValue: D.listValue, pays: p.filter((x) => x.amount > 0), date, name, phone, at: Date.now() })); } catch {}
       return go('#/customer-new');
     }
     if ($('#saveCash').disabled) return; $('#saveCash').disabled = true;
     const b = F.writeBatch(F.db);
-    const saleId = writeCashSale(b, sid, { lines, value: v, cost, pays: p, date, name, phone });
-    F.audit(b, S.user.uid, 'cash-sale', `sellers/${sid}/sales/${saleId}`, null, { value: v, paid, buyer: name });
+    const saleId = writeCashSale(b, sid, { lines: D.lines, value: v, cost, pays: p, date, name, phone, discount: D.discount, listValue: D.listValue });
+    F.audit(b, S.user.uid, 'cash-sale', `sellers/${sid}/sales/${saleId}`, null, { value: v, discount: D.discount, paid, buyer: name });
     F.commit(b, onWriteError);
-    try { sessionStorage.setItem('cashRcpt', JSON.stringify({ saleId, phone, text: cashReceiptText({ date, items: lines, saleValue: v, buyerName: name }, p), at: Date.now() })); } catch {}
+    try { sessionStorage.setItem('cashRcpt', JSON.stringify({ saleId, phone, text: cashReceiptText({ date, items: D.lines, saleValue: v, saleDiscount: D.discount, buyerName: name }, p), at: Date.now() })); } catch {}
     toast(t('Cash sale saved'));
     go('#/cash-sales');
   };
@@ -2176,9 +2205,9 @@ async function sellerFigures(sid, from, to) { return L.sellerReport(await seller
 // Profit figures are not shown any more (no purchase prices in the app; the margin-based estimate misled more
 // than it helped). The money logic still keeps them inside the data, so they can come back if costs are entered later.
 const REP_FIELDS = [['salesValue', 'Sales'], ['cashSales', '— Cash sales'], ['collected', 'Collected'], ['collectedCash', '— Cash'], ['collectedUpi', '— UPI'], ['collectedScrap', '— Scrap'],
-  ['discount', 'Discounts given'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'], ['cashInHand', 'Cash in hand']];
-const repRowCls = (k) => (k === 'cashInHand' ? 'cash' : /Cash$|Upi$|Scrap$|^cashSales$/.test(k) ? 'sub' : '');
-const repLbl = (l) => (l === '— Cash' ? '— ' + t('Cash') : l === '— Scrap' ? '— ' + t('Scrap') : l === '— Cash sales' ? '— ' + t('Cash sales') : t(l));
+  ['discountAll', 'Discounts given'], ['discount', '— on instalments'], ['saleDiscount', '— on sales'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'], ['cashInHand', 'Cash in hand']];
+const repRowCls = (k) => (k === 'cashInHand' ? 'cash' : /Cash$|Upi$|Scrap$|^cashSales$|^discount$|^saleDiscount$/.test(k) ? 'sub' : '');
+const repLbl = (l) => (l.startsWith('— ') && l !== '— UPI' ? '— ' + t(l.slice(2)) : t(l));
 const shiftDate = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5);
 const weekdayOf = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
@@ -2340,7 +2369,9 @@ async function renderReport() {
         <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.collectedCash)}</td></tr>
         <tr class="sub"><td>— UPI</td><td>${money(co.collectedUpi)}</td></tr>
         <tr class="sub"><td>— ${t('Scrap')}</td><td>${money(co.collectedScrap)}</td></tr>
-        <tr><td>${t('Discounts given')}</td><td>${money(co.discount)}</td></tr>
+        <tr><td>${t('Discounts given')}</td><td>${money(co.discountAll)}</td></tr>
+        <tr class="sub"><td>— ${t('on instalments')}</td><td>${money(co.discount)}</td></tr>
+        <tr class="sub"><td>— ${t('on sales')}</td><td>${money(co.saleDiscount)}</td></tr>
         <tr><td>${t('Personal expenses')}</td><td>− ${money(co.personalExpense)}</td></tr>
         <tr><td>${t('Company expenses')}</td><td>− ${money(co.companyExpense)}</td></tr>
         <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.companyExpenseCash)}</td></tr>

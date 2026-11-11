@@ -95,6 +95,17 @@ export function saleTotals(lines) {
 }
 
 /**
+ * A discount on a sale (e.g. cash price): spread over the lines so returns credit what was really charged.
+ * Each line keeps listPrice (the instalment price); the cost stays as it was. Returns the new lines and totals.
+ */
+export function discountLines(lines, discount) {
+  const list = saleTotals(lines).value, d = Math.max(0, Math.min(round2(discount), list));
+  if (!(d > 0)) return { lines, value: list, listValue: list, discount: 0 };
+  const f = (list - d) / list;
+  return { lines: lines.map((l) => ({ ...l, listPrice: l.price, price: round2(l.price * f) })), value: round2(list - d), listValue: list, discount: d };
+}
+
+/**
  * Build a running ledger for one account.
  * entries: sales, collections (incl. advances) and credited returns.
  */
@@ -139,6 +150,7 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   // and its (negative) profit lowers realised profit; booked profit drops by the full discount.
   const paid = collections.filter((c) => c.kind !== 'discount');
   const discount = round2(collections.filter((c) => c.kind === 'discount').reduce((s, c) => s + c.amount, 0));
+  const saleDiscount = round2(sales.reduce((s, x) => s + (Number(x.saleDiscount) || 0), 0)); // already out of salesValue
   const collected = round2(paid.reduce((s, c) => s + c.amount, 0));
   const realised = round2(collections.reduce((s, c) => s + (c.profit || 0), 0));
   const expense = round2(expenses.reduce((s, e) => s + e.amount, 0));
@@ -146,7 +158,7 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   const collectedCash = sumBy(collections, 'cash'), collectedUpi = sumBy(collections, 'upi'), collectedScrap = sumBy(collections, 'scrap');
   const expenseCash = sumBy(expenses, 'cash'), expenseUpi = sumBy(expenses, 'upi');
   return {
-    salesValue, cashSales, returnValue, collected, collectedCash, collectedUpi, collectedScrap, discount, booked, realised,
+    salesValue, cashSales, returnValue, collected, collectedCash, collectedUpi, collectedScrap, discount, saleDiscount, discountAll: round2(discount + saleDiscount), booked, realised,
     expense, expenseCash, expenseUpi, cashInHand: round2(collectedCash - expenseCash),
     net: round2(realised - expense), salesCount: sales.length,
   };
@@ -168,7 +180,7 @@ export function companyReport(sellerReports, companyExpenses = [], scrapLosses =
   const realised = sum('realised');
   const personal = sum('expense');
   return {
-    salesValue: sum('salesValue'), cashSales: sum('cashSales'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'), discount: sum('discount'),
+    salesValue: sum('salesValue'), cashSales: sum('cashSales'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'), discount: sum('discount'), saleDiscount: sum('saleDiscount'), discountAll: sum('discountAll'),
     booked: sum('booked'), realised, personalExpense: personal, companyExpense, companyExpenseCash, companyExpenseUpi, scrap,
     scrapSold, scrapSoldCredited, scrapGain,
     cashInHand: round2(sum('cashInHand') - companyExpenseCash + scrapSoldCash),
