@@ -813,7 +813,8 @@ function renderCustomers() {
   setTitle(t('Customers'));
   if (needSeller()) return;
   const sid = S.sid;
-  let filter = (() => { try { return sessionStorage.getItem('custDay') || 'all'; } catch { return 'all'; } })();
+  // On a route day the list always opens on Today; other days it opens on the tab chosen last (or All).
+  let filter = todayPlan().days.length ? 'today' : (() => { try { return sessionStorage.getItem('custDay') || 'all'; } catch { return 'all'; } })();
   let paidToday = new Set(), visitedToday = new Set(), lastAct = '';
   const loadPaid = async () => {
     const [cols, vis] = await Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', today()))),
