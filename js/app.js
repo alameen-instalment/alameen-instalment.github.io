@@ -868,7 +868,7 @@ function renderCustomers() {
         const dm = byRoute ? dueMark(c.id, paid) : '';
         const dim = dm || (byRoute && !paid && pausedCust(c.id)); // not due yet, or ⏸ inactive: shown faded so nobody goes there by mistake
         return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dim ? 'notdue' : ''}">
-          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">×</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
@@ -1284,8 +1284,11 @@ function renderCustomerForm(id) {
 const noteShareText = (c, n) => [`*${APP_NAME} — ${t('Customer note')}*`, `${c.name}${placeOf(c) ? ' · ' + placeOf(c) : ''}`,
   c.score?.score != null ? `${t('Score')}: ${c.score.score}` : '', `${t('Note')}: ${n.text}`, `— ${S.profile?.name || ''}`].filter(Boolean).join('\n');
 
-const VISIT_REASONS = [['away', 'Not at home'], ['nomoney', 'No money'], ['promise', 'Promised date']];
+const VISIT_REASONS = [['away', 'Not at home'], ['nomoney', 'No money'], ['promise', 'Promised date'], ['noanswer', 'Rang, not answered'], ['unreachable', 'Could not reach (switched off / out of range)']];
+// How the customer was contacted: in person (house visit) or on the phone, and the reasons each way offers.
+const CONTACT_WAYS = { visit: ['away', 'nomoney'], phone: ['noanswer', 'unreachable', 'nomoney'] };
 const reasonLabel = (r) => t((VISIT_REASONS.find((x) => x[0] === r) || [, r])[1]);
+const visitLabel = (v) => (v.via === 'phone' ? '📞 ' : '') + reasonLabel(v.reason);
 
 // ---------- promised dates ("will pay on …") ----------
 // The latest visit with a promised date counts, until the customer pays after it (or gives a new date).
@@ -1359,11 +1362,12 @@ async function renderCustomer(cid) {
           : `<button class="btn" id="geoBtn"><span class="ic">📍</span>${t('Save location')}</button>`}
       </div>
       <div class="contact" style="margin-top:0">
-        <button class="btn" id="visitBtn">⊘ ${t('Visited – no payment')}</button>
+        <button class="btn" id="visitBtn">⊘ ${t('Visited / contacted – no payment')}</button>
         <a class="btn" href="#/order/${cid}">🚚 + ${t('Order')}</a></div>
       <form id="vf" class="card form" hidden>
-        <b>${t('Visited – no payment')}</b>
-        <div class="reasons">${VISIT_REASONS.filter(([k]) => k !== 'promise').map(([k, l], i) => `<label><input type="radio" name="r" value="${k}" ${i ? '' : 'checked'}><span>${t(l)}</span></label>`).join('')}</div>
+        <b>${t('Visited / contacted – no payment')}</b>
+        <div class="seg" role="radiogroup"><label><input type="radio" name="via" value="visit" checked><span>🏠 ${t('In person')}</span></label><label><input type="radio" name="via" value="phone"><span>📞 ${t('Phone')}</span></label></div>
+        <div class="reasons" id="vreasons"></div>
         <label class="chk"><input type="checkbox" name="pk"> 📅 ${t('Promised to pay on a date')}</label>
         <label id="pdl" hidden>${t('Promised to pay on')}<input name="pd" type="date" min="${today()}" value="${nextDay}"></label>
         <label>${t('Note (optional)')}<input name="note"></label>
@@ -1391,7 +1395,7 @@ async function renderCustomer(cid) {
       <ul class="list">${notes.map((n) => `<li class="note ${n.done ? 'done' : ''}"><div class="row" style="padding:0;align-items:flex-start"><div>${n.kind === 'promise' ? '🤝 ' : ''}${esc(n.text)}</div>
         <a class="btn small" title="${t('Share')}" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(noteShareText(c, n))}">📤</a></div>
         <small class="muted">${fmtDate(n.date)}${n.dueDate ? ' · ' + t('Remind') + ' ' + fmtDate(n.dueDate) : ''}${n.done ? ' · ' + t('Done') : ''}</small></li>`).join('')}</ul>
-      ${visits.length ? `<h3>⊘ ${t('Visits without payment')}</h3><ul class="list">${visits.map((v) => `<li class="note"><div>${reasonLabel(v.reason)}${v.promiseDate ? ' → 📅 ' + fmtDate(v.promiseDate) : ''}${v.note ? ' · ' + esc(v.note) : ''}</div><small class="muted">${fmtDate(v.date)}</small>
+      ${visits.length ? `<h3>⊘ ${t('Visits / calls without payment')}</h3><ul class="list">${visits.map((v) => `<li class="note"><div>${visitLabel(v)}${v.promiseDate ? ' → 📅 ' + fmtDate(v.promiseDate) : ''}${v.note ? ' · ' + esc(v.note) : ''}</div><small class="muted">${fmtDate(v.date)}</small>
         ${!v.promiseDate && v.date === today() ? `<form class="vpd contact" data-vpd="${v.id}"><input type="date" name="pd" min="${today()}" value="${nextDay}" style="flex:1;margin:0"><button class="btn small" type="submit">📅 ${t('Add promised date')}</button></form>` : ''}</li>`).join('')}</ul>` : ''}
       ${isAdmin() ? `<div class="contact" style="margin-top:18px"><button class="btn small danger" id="delCust">🗑 ${t('Delete customer')}</button></div>` : ''}`;
     const dc = $('#delCust');
@@ -1444,13 +1448,16 @@ async function renderCustomer(cid) {
     $('#qSale').onclick = () => quick('sale');
     const vf = $('#vf');
     $('#visitBtn').onclick = () => { vf.hidden = !vf.hidden; };
+    const showReasons = () => { const via = pickedMode('via', vf) === 'phone' ? 'phone' : 'visit';
+      $('#vreasons').innerHTML = CONTACT_WAYS[via].map((k, i) => `<label><input type="radio" name="r" value="${k}" ${i ? '' : 'checked'}><span>${reasonLabel(k)}</span></label>`).join(''); };
+    $$('[name=via]', vf).forEach((r) => (r.onchange = showReasons)); showReasons();
     vf.pk.onchange = () => { $('#pdl').hidden = !vf.pk.checked; };
     vf.onsubmit = (e) => {
       e.preventDefault();
-      const reason = vf.r.value, pd = vf.pk.checked ? vf.pd.value : '', now = Date.now(), b = F.writeBatch(F.db);
+      const reason = vf.r.value, via = pickedMode('via', vf) === 'phone' ? 'phone' : 'visit', pd = vf.pk.checked ? vf.pd.value : '', now = Date.now(), b = F.writeBatch(F.db);
       if (vf.pk.checked && !pd) return toast(t('Choose the promised date'), true);
       const vcol = F.sellerCol(sid, 'visits');
-      b.set(F.doc(vcol, F.newId(vcol)), { customerId: cid, date: today(), reason, promiseDate: pd, note: vf.note.value.trim(), createdAt: now, by: S.user.uid });
+      b.set(F.doc(vcol, F.newId(vcol)), { customerId: cid, date: today(), via, reason, promiseDate: pd, note: vf.note.value.trim(), createdAt: now, by: S.user.uid });
       if (pd) { const ncol = F.sellerCol(sid, 'notes'); b.set(F.doc(ncol, F.newId(ncol)), { customerId: cid, customerName: c.name, kind: 'promise', text: t('Promised to pay') + (vf.note.value.trim() ? ' · ' + vf.note.value.trim() : ''), dueDate: pd, done: false, date: today(), createdAt: now }); }
       F.commit(b, onWriteError); toast(t('Visit saved')); rescoreSoon(cid); draw();
     };
@@ -1504,7 +1511,7 @@ function renderPick(action) {
       if (rest.length) sections.push({ head: t('Others'), cls: '', route: false, list: rest });
     } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
     let n = 0;
-    const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited – no payment')}">×</span> ` : '');
+    const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : '');
     const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${pauseMark(c.id)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
@@ -2704,7 +2711,7 @@ async function renderReport() {
           <div class="kv"><b>${esc(g.label)} · ${g.customers} ${t('customers')}</b><span>${t('To collect')} <b>${money(L.round2(g.outstanding))}</b></span></div>
           <div class="kv"><span>${t('Collected')}${g.key !== 'none' ? ` · ${g.runs} ${g.runs === 1 ? t('day') : t('days')}` : ''}</span><b>${money(g.collectedAmt)}</b></div>
           ${g.key !== 'none' && g.runs ? `<div class="kv small"><span>${t('Average per route day')}</span><span>${money(Math.round(g.collectedAmt / g.runs))}</span></div>` : ''}
-          <div class="kv small"><span>✓ ${t('Paid')}: ${g.paid.size} ${t('people')}</span><span>⊘ ${t('Visited – no payment')}: ${g.nopay}</span></div>
+          <div class="kv small"><span>✓ ${t('Paid')}: ${g.paid.size} ${t('people')}</span><span>⊘ ${t('Visited / contacted – no payment')}: ${g.nopay}</span></div>
           ${g.customers ? `<div class="meter"><i style="width:${pct(g.paid.size, g.customers)}%"></i></div><div class="small muted">${pct(g.paid.size, g.customers)}% ${t('of customers paid at least once')}</div>` : ''}</div>`).join('') || `<p class="muted">${t('No customers yet')}</p>`}
         <p class="muted small">${t('A customer on two route days is counted on both; money is counted on the day it was collected.')}</p>`;
       bindSellerBar();
@@ -4053,7 +4060,7 @@ async function renderCloseDay() {
       `${t('Collected')}: *${money(fig.collected)}* (${cols.filter((x) => x.kind !== 'discount' && x.kind !== 'refund').length})`, `  ${t('Cash')} ${money(fig.collectedCash)} · UPI ${money(fig.collectedUpi)}${fig.collectedScrap ? ` · ${t('Scrap')} ${money(fig.collectedScrap)}` : ''}`,
       `${t('Expenses')}: ${money(fig.expense)} (${t('Cash')} ${money(fig.expenseCash)} · UPI ${money(fig.expenseUpi)})`, fig.scrapBought ? `${t('Scrap bought')}: ${money(fig.scrapBought)} (${t('Cash')} ${money(fig.scrapBoughtCash)} · UPI ${money(fig.scrapBoughtUpi)})` : '', `*${t('Cash in hand')}: ${money(fig.cashInHand)}*`, '',
       routeList.length ? `${t('Route')}: ${visited}/${routeList.length} ${t('visited')}` : '',
-      nopay.length ? `${t('No payment')}: ${nopay.map((v) => `${name(v.customerId)} (${reasonLabel(v.reason)}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''})`).join(', ')}` : '',
+      nopay.length ? `${t('No payment')}: ${nopay.map((v) => `${name(v.customerId)} (${visitLabel(v)}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''})`).join(', ')}` : '',
       notSeen.length ? `${t('Not visited')}: ${notSeen.map((c) => c.name).join(', ')}` : ''].filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n').trim();
     view.innerHTML = sellerBar() + `
       <div class="toolbar"><input type="date" id="cdd" value="${day}" max="${today()}"></div>
@@ -4069,7 +4076,7 @@ async function renderCloseDay() {
         ${fig.scrapBought ? `<div class="kv"><span>♻️ ${t('Scrap bought')}</span><b>− ${money(fig.scrapBought)}</b></div><div class="kv small"><span>— ${t('Cash')}</span><span>${money(fig.scrapBoughtCash)}</span></div><div class="kv small"><span>— UPI</span><span>${money(fig.scrapBoughtUpi)}</span></div>` : ''}
         <div class="balance" style="margin-top:8px"><span>${t('Cash in hand')}</span><b>${money(fig.cashInHand)}</b></div></div>
       ${routeList.length ? `<div class="card"><b>🛵 ${t('Route')}: ${visited} / ${routeList.length} ${t('visited')}</b>
-        ${nopay.length ? `<h3>⊘ ${t('No payment')}</h3>${nopay.map((v) => `<div class="kv"><span>${esc(name(v.customerId))}</span><span class="small">${esc(reasonLabel(v.reason))}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''}</span></div>`).join('')}` : ''}
+        ${nopay.length ? `<h3>⊘ ${t('No payment')}</h3>${nopay.map((v) => `<div class="kv"><span>${esc(name(v.customerId))}</span><span class="small">${esc(visitLabel(v))}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''}</span></div>`).join('')}` : ''}
         ${notSeen.length ? `<h3>${t('Not visited')}</h3><div class="small">${notSeen.map((c) => esc(c.name)).join(', ')}</div>` : ''}</div>` : ''}
       <button class="btn primary" id="cdSend">📤 ${closed ? t('Send again to admin') : t('Close day and send to admin')}</button>
       ${S.settings.adminWa ? '' : `<p class="muted small">${t("Admin's WhatsApp number is not set (Admin → App settings), so WhatsApp will ask whom to send to.")}</p>`}`;
