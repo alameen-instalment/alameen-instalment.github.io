@@ -494,3 +494,4 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .ledger tr.writeoff td { color: #D2453A; }
 .ledger tr.recovery td { color: var(--muted); }
 .acctiles[hidden] { display: none; }
+.worow.faded { opacity: .6; }

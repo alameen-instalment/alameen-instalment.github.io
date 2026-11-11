@@ -154,7 +154,8 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   const discount = round2(collections.filter((c) => c.kind === 'discount').reduce((s, c) => s + c.amount, 0));
   const saleDiscount = round2(sales.reduce((s, x) => s + (Number(x.saleDiscount) || 0), 0)); // already out of salesValue
   // bad debt written off (not money); money got back later is in "collected" as kind 'recovery'
-  const writtenOff = round2(writeoffs.reduce((s, w) => s + (Number(w.amount) || 0), 0));
+  // old bad debts from before the app are a list only, not a loss of this period; money got back from them still counts
+  const writtenOff = round2(writeoffs.filter((w) => !w.old).reduce((s, w) => s + (Number(w.amount) || 0), 0));
   const recovered = round2(collections.filter((c) => c.kind === 'recovery').reduce((s, c) => s + c.amount, 0));
   const collected = round2(paid.reduce((s, c) => s + c.amount, 0));
   const realised = round2(collections.reduce((s, c) => s + (c.profit || 0), 0));

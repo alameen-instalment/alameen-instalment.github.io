@@ -316,6 +316,7 @@ const routes = [
   [/^#\/collections$/, renderCollections],
   [/^#\/upi$/, renderUpiSetup],
   [/^#\/items$/, renderItemNames],
+  [/^#\/writeoffs$/, renderWriteoffs],
   [/^#\/cash-sale$/, renderCashSale],
   [/^#\/catalog$/, renderCatalog],
   [/^#\/catalog-edit\/([\w-]+)$/, renderCatalogEdit],
@@ -647,7 +648,7 @@ const bandOf = (n) => (n == null ? 'new' : n >= 80 ? 'good' : n >= 60 ? 'ok' : '
 function othersOf(c, ownKey = S.sid) {
   const by = {};
   for (const h of c?.phoneHashes || []) for (const e of S.phoneIdx[h] || []) {
-    if (e.sellerKey === ownKey) continue;
+    if (e.sellerKey === ownKey || e.old) continue;
     const o = (by[e.sellerKey] ||= { key: e.sellerKey, name: e.sellerName || sellerName(e.sellerKey), score: e.score, ban: '' });
     if (e.score != null && (o.score == null || e.score < o.score)) o.score = e.score;
     if (e.ban) o.ban = e.ban;
@@ -679,6 +680,7 @@ function scoreBadges(c, big = false) {
     h += `<span class="sc mini sc-${bandOf(o.score)}" data-tip="${esc(`${o.name}${t("'s customer too")} · ${t('Score')} ${o.score ?? t('new')}`)}">${esc(sellerInitial(o.key))}${o.score != null ? ' ' + o.score : ''}</span>`;
     if (o.ban) h += `<span class="sc sc-ban" data-tip="${esc(`🚫 ${o.name}: ${o.ban}`)}">${esc(sellerInitial(o.key))}</span>`;
   }
+  for (const o of oldDebtsOf(c.phoneHashes)) h += `<span class="sc sc-ban" data-tip="${esc(`🚫 ${o.name}: ${o.ban}`)}">${esc(sellerInitial(o.key))}</span>`;
   return `<span class="scores">${h}</span>`;
 }
 /**
@@ -1150,7 +1152,7 @@ function renderCustomerForm(id) {
   $$('#cf input[name=day]').forEach((cb) => (cb.onchange = drawPlace));
   drawPlace();
   // Number already a customer of another seller? Warn (never block) so the seller can ask them first.
-  let cashSalesCache = null;
+  let cashSalesCache = null, oldWoCache = null;
   if (pend) {
     const f0 = $('#cf'); if (pend.name) f0.name.value = pend.name;
     const pn0 = $('.phonerow [name=pn]'); if (pn0 && pend.phone) pn0.value = pend.phone;
@@ -1158,8 +1160,17 @@ function renderCustomerForm(id) {
   }
   const checkPhones = async () => {
     const hashes = await hashesOf($$('.phonerow [name=pn]').map((i) => ({ number: i.value })));
-    const others = othersOf({ phoneHashes: hashes }, S.sid);
+    const others = othersOf({ phoneHashes: hashes }, S.sid), olds = c ? [] : oldDebtsOf(hashes);
     let before = '';
+    if (!c) { // same name as an old bad debt in this book (a hint only: names repeat)
+      const nk = L.nameKey($('#cf')?.name.value || '');
+      if (nk) {
+        oldWoCache ||= F.fetchAll(F.query(F.sellerCol(S.sid, 'writeoffs'), F.where('old', '==', true))).catch(() => []);
+        const hashSet = new Set(hashes);
+        before += (await oldWoCache).filter((w) => L.nameKey(w.customerName) === nk && !hashSet.has(w.phoneHash))
+          .map((w) => `<div class="infoline">ℹ️ ${t('Same name as an old bad debt')}: ${esc(w.customerName)}${w.place ? ' · ' + esc(w.place) : ''}${w.phone ? ' · ' + esc(w.phone) : ''} · ${money(w.amount - (w.recovered || 0))}</div>`).join('');
+      }
+    }
     if (!c) { // the same number bought before as a walk-in cash sale (own book only)
       const nums = new Set($$('.phonerow [name=pn]').map((i) => last10(i.value)).filter((x) => x.length === 10));
       if (nums.size) {
@@ -1169,7 +1180,7 @@ function renderCustomerForm(id) {
       }
     }
     const dw = $('#dupWarn'); if (!dw) return; // the form was already saved and closed
-    dw.innerHTML = others.map((o) => `<div class="warnline">📞 ${t('This number is also a customer of')} <b>${esc(o.name)}</b>${o.score != null ? ` (${t('Score')} ${o.score})` : ''}${o.ban ? ` · 🚫 ${esc(o.ban)}` : ''}. ${t('Ask them before adding.')}</div>`).join('') + before;
+    dw.innerHTML = olds.map((o) => `<div class="warnline">🚫 ${esc(o.ban)} (${esc(o.name)}). ${t('Ask the seller before giving goods.')}</div>`).join('') + others.map((o) => `<div class="warnline">📞 ${t('This number is also a customer of')} <b>${esc(o.name)}</b>${o.score != null ? ` (${t('Score')} ${o.score})` : ''}${o.ban ? ` · 🚫 ${esc(o.ban)}` : ''}. ${t('Ask them before adding.')}</div>`).join('') + before;
   };
   const bindPhones = () => {
     $$('[data-prm]').forEach((b) => (b.onclick = () => { if ($$('.phonerow').length > 1) b.parentElement.remove(); checkPhones(); }));
@@ -1199,6 +1210,7 @@ function renderCustomerForm(id) {
     bindPhones(); checkPhones();
   };
   bindPhones();
+  if (!c) $('#cf').name.addEventListener('change', checkPhones);
   checkPhones();
   const pf = $('#cf'), psv = $('#psv');
   const showPs = () => { const v = Number(pf.ps.value); psv.textContent = v; psv.className = `sc big sc-${bandOf(v)}`; };
@@ -2884,6 +2896,7 @@ function renderMenu() {
     <li><a href="#/shop-link">🛍️ ${t('Shop link')}</a></li>
     ${S.sid ? `<li><a href="#/upi">📲 ${t('My UPI')}</a></li>` : ''}
     ${S.sid ? `<li><a href="#/items">🏷️ ${t('Item names')}</a></li>` : ''}
+    ${S.sid || isAdmin() ? `<li><a href="#/writeoffs">🚫 ${t('Write-offs')}</a></li>` : ''}
     ${isAdmin() ? `<li><a href="#/company-expenses">🏢 ${t('Company expenses')}</a></li>
       <li><a href="#/scrap">♻️ ${t('Scrap')}</a></li>
       <li><a href="#/catalog">🛍️ ${t('Shop catalog')}</a></li>
@@ -3033,11 +3046,11 @@ async function renderBackup() {
       add('Accounts', per.accounts.map((a) => ({ seller: a.seller, id: a.id, customer: cname[a.customerId], customerId: a.customerId, account: a.name, frequency: a.frequency, openingBalance: a.openingBalance, balance: a.balance, status: a.status })));
       const cashName = (x) => `Cash sale${x.buyerName ? ': ' + x.buyerName : ''}`;
       add('Sales', per.sales.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : cname[x.customerId], account: aname[x.accountId], items: items(x.items), saleValue: x.saleValue, cost: x.cost, advance: x.advance, returnedValue: x.creditedValue || 0, id: x.id })));
-      add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: MODE_EN[x.mode] || 'Cash', upiTo: x.upiTo || '', scrap: (x.scrapItems || []).map((i) => `${i.type} ${i.value}`).join('; '), amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
+      add('Collections', per.collections.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? cashName(x) : x.old ? `Old bad debt: ${x.buyerName || ''}` : cname[x.customerId], account: aname[x.accountId], type: x.kind, mode: MODE_EN[x.mode] || 'Cash', upiTo: x.upiTo || '', scrap: (x.scrapItems || []).map((i) => `${i.type} ${i.value}`).join('; '), amount: x.amount, profit: x.profit, note: x.note, enteredBy: userName(x.by), at: when(x.createdAt) })));
       add('Returns', per.returns.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? 'Cash sale' : cname[x.customerId], account: aname[x.accountId], items: items(x.items), condition: x.condition, credited: x.credited ? 'yes' : 'no', amount: x.amount, cost: x.cost })));
       add('Notes', per.notes.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId] || x.customerName, note: x.text, remindOn: x.dueDate, done: x.done ? 'yes' : 'no' })));
       add('Expenses', per.expenses.map((x) => ({ seller: x.seller, date: x.date, type: x.category, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, note: x.note })));
-      add('Write-offs', per.writeoffs.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId] || x.customerName, account: aname[x.accountId], amount: x.amount, recovered: x.recovered || 0, reason: x.reason })));
+      add('Write-offs', per.writeoffs.map((x) => ({ seller: x.seller, date: x.date, old: x.old ? 'yes' : '', customer: cname[x.customerId] || x.customerName, phone: x.phone || '', place: x.place || '', account: aname[x.accountId], amount: x.amount, recovered: x.recovered || 0, reason: x.reason })));
       add('Visits', per.visits.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], reason: x.reason, promisedDate: x.promiseDate || '', note: x.note })));
       add('Orders', per.orders.map((x) => ({ seller: x.seller, ordered: when(x.createdAt), customer: x.customerName, items: (x.items || []).map((i) => `${i.name} x${i.qty}`).join('; '), deliveryDate: x.deliveryDate, status: x.status, note: x.note })));
       const [cexp, comp, scrap, sIn, sSales] = await Promise.all([all('companyExpenses'), all('complaints'), all('scrapLosses'), all('scrapIn'), all('scrapSales')]);
@@ -3294,6 +3307,7 @@ function riskWarnings(c) {
   if (c.prior && c.prior.score < 60 && c.prior.note && (c.score?.prior?.w ?? 0) < 1) warns.push(`🤝 ${esc(c.prior.note)}`);
   if (c.ban) warns.push(`🚫 ${esc(c.ban.byName || '')}: ${esc(c.ban.reason)}`);
   othersOf(c).forEach((x) => { if (x.ban) warns.push(`🚫 ${esc(x.name)}: ${esc(x.ban)}`); else if (x.score != null && x.score < 60) warns.push(`${esc(x.name)} — ${t('Score')} ${x.score}`); });
+  oldDebtsOf(c.phoneHashes).forEach((x) => warns.push(`🚫 ${esc(x.name)}: ${esc(x.ban)}`));
   return warns;
 }
 
@@ -3484,7 +3498,7 @@ async function renderOrders() {
 }
 
 // ---------- collections of a day: list, edit, delete ----------
-const KIND_LABEL = { collection: 'Collection', advance: 'Advance', cash: 'Cash sale', refund: 'Refund', discount: 'Discount' };
+const KIND_LABEL = { collection: 'Collection', advance: 'Advance', cash: 'Cash sale', refund: 'Refund', discount: 'Discount', recovery: 'Recovered after write-off' };
 /** Remove a collection or discount from its account (balance and open items put back). */
 function removeCollection(b, sid, col) {
   b.delete(F.sellerDoc(sid, 'collections', col.id));
@@ -3555,10 +3569,10 @@ async function renderCollections() {
     const cols = (await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', day)))).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0));
     const fig = L.sellerReport({ collections: cols });
     const pays = cols.filter((c) => c.kind !== 'discount'), discs = cols.filter((c) => c.kind === 'discount');
-    const people = new Set(pays.filter((c) => c.kind !== 'refund').map((c) => c.customerId || 'cash:' + c.saleId)).size;
+    const people = new Set(pays.filter((c) => c.kind !== 'refund').map((c) => c.customerId || (c.old ? 'wo:' + c.writeoffId : 'cash:' + c.saleId))).size;
     const time = (ms) => (ms ? new Date(ms).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }) : '');
-    const who = (c) => (c.cash ? `🛒 ${esc(c.buyerName || t('Walk-in buyer'))}` : esc(S.customers[c.customerId]?.name || '?'));
-    const link = (c) => (c.cash ? '#/cash-sales' : `#/account/${c.customerId}/${c.accountId}`);
+    const who = (c) => (c.cash ? `🛒 ${esc(c.buyerName || t('Walk-in buyer'))}` : c.old ? `🚫 ${esc(c.buyerName || '?')}` : esc(S.customers[c.customerId]?.name || '?'));
+    const link = (c) => (c.cash ? '#/cash-sales' : c.old ? '#/writeoffs' : `#/account/${c.customerId}/${c.accountId}`);
     const row = (c) => {
       const editable = c.kind === 'collection' || c.kind === 'advance' || (c.kind === 'cash' && c.mode !== 'scrap');
       const canDel = c.kind === 'collection' || c.kind === 'discount';
@@ -3731,6 +3745,172 @@ function renderItemNames() {
   };
   $('#iq').oninput = draw;
   draw();
+}
+
+// ---------- Write-offs: bad debts written off in the app, and old bad debts from before the app ----------
+/** Old bad debt (not a customer in the app): name, phone, place, amount, reason. Shared with all sellers as a 🚫 phone-index entry. */
+const oldLeft = (w) => Math.max(0, L.round2((Number(w.amount) || 0) - (Number(w.recovered) || 0)));
+const oldBanText = (w) => `${t('Old bad debt')} ${rmoney(oldLeft(w))}${w.reason ? ': ' + w.reason : ''}`;
+function writeOldIndex(b, sid, w, oldHash) {
+  if (oldHash && oldHash !== w.phoneHash) b.delete(F.doc(F.db, 'phoneIndex', `${oldHash}_${sid}_wo_${w.id}`));
+  if (w.phoneHash && oldLeft(w) <= 0) b.delete(F.doc(F.db, 'phoneIndex', `${w.phoneHash}_${sid}_wo_${w.id}`)); // paid back in full: no more warning
+  else if (w.phoneHash) b.set(F.doc(F.db, 'phoneIndex', `${w.phoneHash}_${sid}_wo_${w.id}`), { hash: w.phoneHash, sellerKey: sid, sellerName: sellerName(sid), score: null, ban: oldBanText(w), old: true, updatedAt: Date.now() });
+}
+/** Old bad debts (any seller, own book too) on these phone hashes. */
+function oldDebtsOf(hashes) {
+  const out = [];
+  for (const h of hashes || []) for (const e of S.phoneIdx[h] || []) if (e.old) out.push({ key: e.sellerKey, name: e.sellerName || sellerName(e.sellerKey), ban: e.ban });
+  return out;
+}
+
+async function renderWriteoffs() {
+  setTitle(t('Write-offs'), '#/menu');
+  const admin = isAdmin();
+  if (!admin && needSeller()) return;
+  let wsid = admin ? (() => { try { return sessionStorage.getItem('woSeller') ?? (S.sid || ''); } catch { return S.sid || ''; } })() : S.sid;
+  let kind = 'all', q = '', open = null, form = null; // form: null | 'add' | writeoff id being edited | 'rec:<id>'
+  let rows = [], recs = {};
+  const load = async () => {
+    const keys = wsid ? [wsid] : sellers().map((s) => s.id);
+    const per = await Promise.all(keys.map(async (k) => (await F.fetchAll(F.sellerCol(k, 'writeoffs')).catch(() => [])).map((w) => ({ ...w, sid: k }))));
+    rows = per.flat().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)));
+  };
+  const loadRecs = async (w) => {
+    recs[w.id] = (await F.fetchAll(F.query(F.sellerCol(w.sid, 'collections'), F.where('writeoffId', '==', w.id))).catch(() => [])).sort((a, b) => (a.date < b.date ? 1 : -1));
+  };
+  const nameOf = (w) => (w.old ? w.customerName : S.customers[w.customerId]?.name || w.customerName || '?');
+  const left = (w) => Math.max(0, L.round2((w.amount || 0) - (w.recovered || 0)));
+  const sellerOpts = (sel, withAll) => `${withAll ? `<option value="" ${!sel ? 'selected' : ''}>${t('All sellers')}</option>` : '<option value="">—</option>'}${sellers().map((s) => `<option value="${s.id}" ${s.id === sel ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}`;
+  const formHtml = (w) => `<form class="card form" id="wof2">
+      <h3>${w ? t('Edit old bad debt') : t('Add old bad debt')}</h3>
+      <p class="small muted">${t('For customers from before the app who never paid. They are not added to the customer list or the route. If the same number is added as a new customer later, a 🚫 warning shows for every seller.')}</p>
+      ${admin && !w ? `<label>${t('Seller')}<select name="sid" required>${sellerOpts(wsid, false)}</select></label>` : ''}
+      <label>${t('Name')}<input name="nm" required value="${esc(w?.customerName || '')}"></label>
+      <div class="two"><label>${t('Phone')}<input name="ph" type="tel" inputmode="tel" value="${esc(w?.phone || '')}"></label><label>${t('Place')}<input name="pl" value="${esc(w?.place || '')}"></label></div>
+      ${canPickContact() ? `<div class="contact"><button type="button" class="btn ghost small" id="woContact">📇 ${t('From contacts')}</button></div>` : ''}
+      <div class="two"><label>${t('Amount')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" required value="${w?.amount ?? ''}"></label><label>${t('Date')}<input name="date" type="date" max="${today()}" value="${w?.date || today()}"></label></div>
+      <label>${t('Reason')}<input name="reason" maxlength="120" value="${esc(w?.reason || '')}" placeholder="${t('e.g. Not paid for 2 years, moved away')}"></label>
+      <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" id="wof2X">${t('Cancel')}</button></div></form>`;
+  const recForm = (w) => `<form class="form edbox" id="wrec" data-w="${w.id}"><label>${t('Money got back from this customer')}<input name="amt" type="number" step="any" min="0" inputmode="decimal" required></label>
+      ${payPicker('wrmode', 'cash')}
+      <div class="two"><label>${t('Date')}<input name="date" type="date" value="${today()}" max="${today()}"></label><label>${t('Note')}<input name="note"></label></div>
+      <div class="contact"><button class="btn primary" type="submit">${t('Save money got back')}</button><button class="btn" type="button" data-rx>${t('Cancel')}</button></div></form>`;
+  const rowHtml = (w) => {
+    const isOpen = open === w.id + w.sid, l = left(w);
+    const sub = [fmtDate(w.date), !wsid ? sellerName(w.sid) : '', w.old ? [w.phone, w.place].filter(Boolean).join(' · ') : '', w.reason].filter(Boolean).map(esc).join(' · ');
+    return `<li class="card worow ${l <= 0 ? 'faded' : ''}"><div class="row" style="padding:0" data-wo="${w.id + w.sid}">
+        <div style="flex:1"><b>🚫 ${esc(nameOf(w))}</b> ${w.old ? `<span class="tag">${t('Old')}</span>` : ''}<small>${sub}</small>
+          <small>${t('Written off')} ${money(w.amount)}${w.recovered ? ` · ${t('Recovered')} ${money(w.recovered)}` : ''}</small></div>
+        <div class="amt">${l > 0 ? money(l) : '✓'}</div></div>
+      ${isOpen ? `<div class="contact">
+          ${!w.old ? `<button class="btn small" data-acc="${w.id + w.sid}">📒 ${t('Open account')}</button>` : ''}
+          ${w.old && admin ? `<button class="btn small primary" data-rec="${w.id + w.sid}">+ ${t('Money got back')}</button><button class="btn small" data-wed="${w.id + w.sid}">✏️ ${t('Edit')}</button>${!(w.recovered > 0) ? `<button class="btn small danger" style="width:auto" data-wdel="${w.id + w.sid}">× ${t('Delete')}</button>` : ''}` : ''}</div>
+        ${form === 'rec:' + w.id ? recForm(w) : ''}
+        ${form === w.id ? formHtml(w) : ''}
+        ${(recs[w.id] || []).length ? `<h4>${t('Money got back')}</h4><ul class="list">${recs[w.id].map((c) => `<li class="kv"><span>${fmtDate(c.date)} · ${modeLabel(c.mode)}${c.note ? ' · ' + esc(c.note) : ''}</span><span><b>${money(c.amount)}</b>${admin ? ` <button class="btn small danger" style="width:auto" data-rdel="${c.id}" data-w="${w.id + w.sid}">×</button>` : ''}</span></li>`).join('')}</ul>` : ''}` : ''}</li>`;
+  };
+  const draw = () => {
+    const ql = q.trim().toLowerCase();
+    const list = rows.filter((w) => (kind === 'all' || (kind === 'old') === !!w.old)
+      && (!ql || [nameOf(w), w.phone, w.place, w.reason].some((x) => String(x || '').toLowerCase().includes(ql))));
+    const tot = (k) => L.round2(list.reduce((s, w) => s + (k === 'left' ? left(w) : Number(w[k]) || 0), 0));
+    view.innerHTML = `${admin ? `<div class="sellerbar"><label>${t('Viewing seller')}</label><select id="woSel">${sellerOpts(wsid, true)}</select></div>` : ''}
+      <div class="card"><div class="kv"><span>${t('Written off')} · ${list.length}</span><b>${money(tot('amount'))}</b></div>
+        <div class="kv"><span>${t('Recovered')}</span><span>${money(tot('recovered'))}</span></div>
+        <div class="kv"><span>${t('Still to get')}</span><b>${money(tot('left'))}</b></div></div>
+      ${admin && form === 'add' ? formHtml(null) : admin ? `<div class="actions"><button class="btn primary" id="woAdd">+ ${t('Add old bad debt')}</button></div>` : ''}
+      <div class="toolbar"><input id="woq" type="search" placeholder="${t('Search')}" value="${esc(q)}">
+        <select id="wok"><option value="all">${t('All')}</option><option value="old" ${kind === 'old' ? 'selected' : ''}>${t('Old (before the app)')}</option><option value="app" ${kind === 'app' ? 'selected' : ''}>${t('Written off in the app')}</option></select></div>
+      <ul class="list" id="wolist">${list.map(rowHtml).join('') || `<li class="muted">${t('No write-offs')}</li>`}</ul>`;
+    bind();
+  };
+  const find = (key) => rows.find((w) => w.id + w.sid === key);
+  const bindForm = (w) => {
+    const f = $('#wof2'); if (!f) return;
+    $('#wof2X').onclick = () => { form = null; draw(); };
+    const wc = $('#woContact');
+    if (wc) wc.onclick = async () => {
+      const got = await pickContact(); if (!got) return;
+      if (got.name && !f.nm.value.trim()) f.nm.value = got.name;
+      if (!got.numbers.length) return toast(t('This contact has no phone number'), true);
+      let i = 0; if (got.numbers.length > 1) { i = await askChoice(t('Which number?'), got.numbers); if (i == null) return; }
+      f.ph.value = got.numbers[i];
+    };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const sid = w ? w.sid : f.sid?.value || wsid;
+      if (!sid) return toast(t('Choose a seller'), true);
+      const amount = L.round2(num(f.amt.value)), name = f.nm.value.trim().replace(/\s+/g, ' ');
+      if (!name || !(amount > 0)) return toast(t('Enter the amount'), true);
+      const phone = cleanPhone(f.ph.value.trim()), ph = phone ? await phoneHash(phone) : null;
+      const d = { old: true, accountId: null, customerId: null, customerName: name, phone, place: f.pl.value.trim(), amount, date: f.date.value || today(), reason: f.reason.value.trim(), phoneHash: ph };
+      const b = F.writeBatch(F.db), wcol = F.sellerCol(sid, 'writeoffs');
+      if (w) {
+        b.update(F.sellerDoc(sid, 'writeoffs', w.id), d);
+        writeOldIndex(b, sid, { ...w, ...d }, w.phoneHash);
+        F.audit(b, S.user.uid, 'writeoff-old-edit', `sellers/${sid}/writeoffs/${w.id}`, { customerName: w.customerName, phone: w.phone, amount: w.amount, reason: w.reason }, d);
+        Object.assign(w, d);
+      } else {
+        const id = F.newId(wcol), doc = { ...d, recovered: 0, createdAt: Date.now(), by: S.user.uid };
+        b.set(F.doc(wcol, id), doc);
+        writeOldIndex(b, sid, { id, ...doc });
+        F.audit(b, S.user.uid, 'writeoff-old', `sellers/${sid}/writeoffs/${id}`, null, doc);
+        rows.unshift({ id, sid, ...doc });
+      }
+      F.commit(b, onWriteError); toast(t('Saved')); form = null; draw();
+    };
+  };
+  const bind = () => {
+    const sel = $('#woSel');
+    if (sel) sel.onchange = async () => { wsid = sel.value; try { sessionStorage.setItem('woSeller', wsid); } catch {} open = null; form = null; await load(); draw(); };
+    $('#woq').oninput = (e) => { q = e.target.value; const pos = e.target.selectionStart; draw(); const i = $('#woq'); i.focus(); try { i.setSelectionRange(pos, pos); } catch {} };
+    $('#wok').onchange = (e) => { kind = e.target.value; draw(); };
+    const add = $('#woAdd'); if (add) add.onclick = () => { form = 'add'; open = null; draw(); $('#wof2')?.scrollIntoView({ block: 'start' }); };
+    if (form === 'add') bindForm(null);
+    $$('[data-wo]').forEach((r) => (r.onclick = async () => {
+      const key = r.dataset.wo; open = open === key ? null : key; form = null;
+      const w = find(key); draw();
+      if (open && w) { await loadRecs(w); if (open === key) draw(); }
+    }));
+    $$('[data-acc]').forEach((b) => (b.onclick = () => { const w = find(b.dataset.acc); if (!w) return; if (S.sid !== w.sid) selectSeller(w.sid); go(`#/account/${w.customerId}/${w.accountId}`); }));
+    $$('[data-wed]').forEach((b) => (b.onclick = () => { form = find(b.dataset.wed)?.id || null; draw(); }));
+    $$('[data-rec]').forEach((b) => (b.onclick = () => { form = 'rec:' + find(b.dataset.rec)?.id; draw(); $('#wrec')?.amt.focus(); }));
+    $$('[data-rx]').forEach((b) => (b.onclick = () => { form = null; draw(); }));
+    const w0 = open && find(open); if (w0 && form === w0.id) bindForm(w0);
+    $$('[data-wdel]').forEach((b) => (b.onclick = () => {
+      const w = find(b.dataset.wdel); if (!w || !confirm(`${t('Delete this old bad debt?')}\n${w.customerName} · ${money(w.amount)}`)) return;
+      const bt = F.writeBatch(F.db);
+      bt.delete(F.sellerDoc(w.sid, 'writeoffs', w.id));
+      if (w.phoneHash) bt.delete(F.doc(F.db, 'phoneIndex', `${w.phoneHash}_${w.sid}_wo_${w.id}`));
+      F.audit(bt, S.user.uid, 'writeoff-old-delete', `sellers/${w.sid}/writeoffs/${w.id}`, w, null);
+      F.commit(bt, onWriteError); rows = rows.filter((x) => x !== w); open = null; toast(t('Deleted')); draw();
+    }));
+    const rf = $('#wrec');
+    if (rf) rf.onsubmit = (e) => {
+      e.preventDefault();
+      const w = rows.find((x) => x.id === rf.dataset.w); if (!w) return;
+      const amt = L.round2(num(rf.amt.value)); if (!(amt > 0)) return toast(t('Enter the amount'), true);
+      const mode = pickedMode('wrmode', rf), date = rf.date.value || today(), b = F.writeBatch(F.db), ccol = F.sellerCol(w.sid, 'collections'), id = F.newId(ccol);
+      const doc = { accountId: null, customerId: null, old: true, buyerName: w.customerName, date, amount: amt, kind: 'recovery', mode, ...upiTag(mode), writeoffId: w.id, note: rf.note.value.trim(), allocations: [], profit: 0, createdAt: Date.now(), by: S.user.uid };
+      b.set(F.doc(ccol, id), doc);
+      b.update(F.sellerDoc(w.sid, 'writeoffs', w.id), { recovered: F.increment(amt) });
+      w.recovered = L.round2((w.recovered || 0) + amt); writeOldIndex(b, w.sid, w);
+      F.commit(b, onWriteError);
+      (recs[w.id] ||= []).unshift({ id, ...doc });
+      toast(t('Saved')); form = null; closedReminder(w.sid, [date]); draw();
+    };
+    $$('[data-rdel]').forEach((b) => (b.onclick = () => {
+      const w = find(b.dataset.w), c = (recs[w?.id] || []).find((x) => x.id === b.dataset.rdel);
+      if (!w || !c || !confirm(`${t('Delete this entry?')}\n${w.customerName || nameOf(w)} · ${money(c.amount)}`)) return;
+      const bt = F.writeBatch(F.db); removeCollection(bt, w.sid, c);
+      F.audit(bt, S.user.uid, 'collection-delete', `sellers/${w.sid}/collections/${c.id}`, c, null);
+      w.recovered = L.round2((w.recovered || 0) - c.amount); if (w.old) writeOldIndex(bt, w.sid, w);
+      F.commit(bt, onWriteError); recs[w.id] = recs[w.id].filter((x) => x !== c);
+      toast(t('Deleted')); closedReminder(w.sid, [c.date]); draw();
+    }));
+  };
+  view.innerHTML = '';
+  await load(); draw();
 }
 
 function renderUpiSetup() {
