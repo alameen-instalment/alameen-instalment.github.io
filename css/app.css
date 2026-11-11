@@ -281,7 +281,7 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .reasons input:checked + span { background: var(--grey); border-color: var(--grey); color: #fff; }
 .scrapline { display: grid; grid-template-columns: 1fr 110px 24px; gap: 6px; align-items: center; margin: 6px 0; }
 .scrapline select, .scrapline input { margin: 0; }
-.orderline { display: grid; grid-template-columns: 1fr 64px 24px; gap: 6px; align-items: center; margin: 6px 0; }
+.orderline { display: grid; grid-template-columns: 40px 1fr 64px 24px; gap: 6px; align-items: center; margin: 6px 0; }
 .orderline input { margin: 0; }
 .tabs { display: flex; gap: 6px; margin: 4px 0 10px; }
 .tabs button { flex: 1; font: inherit; font-weight: 700; padding: 9px 6px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
@@ -454,3 +454,19 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .prow { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .prow input[type=range] { flex: 1; accent-color: var(--accent); height: 28px; }
 .priorline { margin-top: 6px; font-size: 13px; }
+/* v30: order items to buy */
+.acctiles .tile { justify-content: center; text-align: center; }
+.ichips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ichip { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 600; }
+.ichip.buy { background: var(--warn-soft); border-color: #D49B00; }
+.ichip small { font-weight: 500; color: var(--muted); }
+.ordcard .row { padding: 0; }
+.buyrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.buyrow .bq { margin-left: 6px; }
+.buyrow small { display: block; color: var(--muted); }
+.orderline .obuy { display: flex; align-items: center; margin: 0; }
+.orderline .obuy input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.orderline .obuy span { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; filter: grayscale(1); opacity: .45; }
+.orderline .obuy input:checked + span { filter: none; opacity: 1; background: var(--warn-soft); border-color: #D49B00; }
+.choice input[type=number] { font-size: 20px; text-align: center; }
+.buyrow .btn { width: auto; flex: none; }

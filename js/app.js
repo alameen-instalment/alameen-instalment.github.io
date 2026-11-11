@@ -84,6 +84,22 @@ function askChoice(title, options) {
     ov.onclick = (e) => { if (e.target === ov) end(null); };
   });
 }
+/** Small in-page number prompt. Resolves to a whole number between 1 and max, or null on cancel. */
+function askNumber(title, value, max) {
+  return new Promise((done) => {
+    const ov = document.createElement('div');
+    ov.className = 'qrov';
+    ov.innerHTML = `<form class="card choice" role="dialog"><b>${esc(title)}</b>
+      <input type="number" name="n" min="1" max="${max}" step="1" inputmode="numeric" value="${value}">
+      <button class="btn primary" type="submit">${t('Save')}</button><button type="button" class="btn ghost" data-x>${t('Cancel')}</button></form>`;
+    document.body.appendChild(ov);
+    const f = $('form', ov), end = (v) => { ov.remove(); done(v); };
+    f.n.focus(); f.n.select();
+    f.onsubmit = (e) => { e.preventDefault(); const v = Math.round(num(f.n.value)); if (!(v >= 1)) return; end(Math.min(v, max)); };
+    $('[data-x]', ov).onclick = () => end(null);
+    ov.onclick = (e) => { if (e.target === ov) end(null); };
+  });
+}
 const modeLabel = (m) => (m === 'upi' ? 'UPI' : m === 'scrap' ? t('Scrap') : t('Cash'));
 const MODE_ICON = { cash: '💵', upi: '📱', scrap: '♻️' };
 const MODE_EN = { cash: 'Cash', upi: 'UPI', scrap: 'Scrap' };
@@ -1349,10 +1365,11 @@ async function renderAccount(cid, aid) {
       <div class="card balance"><span>${t('Balance due')}</span><b>${money(a.balance)}</b>
         <small>${freqLabel(a.frequency)}${a.status === 'closed' ? ' · ' + t('Closed') : a.inactive ? ' · ⏸ ' + t('Inactive') + (a.inactiveSince ? ' ' + t('since') + ' ' + fmtDate(a.inactiveSince) : '') : ''}</small>
         <button class="linkbtn obal" id="obal">${Number(a.openingBalance) > 0 ? `${t('Opening balance')}: ${money(a.openingBalance)} ✏️` : `+ ${t('Opening balance')}`}</button></div>
-      <div class="grid3">
+      <div class="grid2 acctiles">
         <a class="tile primary" href="#/collect/${cid}/${aid}">${t('Collection')}</a>
         <a class="tile" href="#/sale/${cid}/${aid}">${t('New sale')}</a>
         <a class="tile" href="#/return/${cid}/${aid}">${t('Return')}</a>
+        <a class="tile" href="#/order/${cid}" id="accOrd">🚚 ${t('Order')}</a>
       </div>
       <div class="contact">
         <button class="btn wa" id="waStmt">${t('Send statement')} (WhatsApp)</button>
@@ -1408,6 +1425,7 @@ async function renderAccount(cid, aid) {
       toast(t('Saved')); draw();
     };
     $('#obal').onclick = () => editOpening(sid, cid, aid).then((ok) => ok && setTimeout(draw, 300));
+    $('#accOrd').onclick = () => { try { sessionStorage.setItem('orderBack', `#/account/${cid}/${aid}`); } catch {} };
     $('#waStmt').onclick = () => window.open(`https://wa.me/${L.waNumber(c.phone)}?text=${encodeURIComponent(stmtText())}`, '_blank');
     $('#pdfStmt').onclick = () => makePdf({
       title: `Statement - ${c.name} (${a.name})`, subtitle: `${c.phone || ''}  |  ${fmtDate(today())}`,
@@ -1469,7 +1487,7 @@ async function voidSale(sid, cid, aid, a0, data0, saleId) {
   const ords = await F.fetchAll(F.query(F.sellerCol(sid, 'orders'), F.where('saleId', '==', saleId)));
   ords.forEach((o) => {
     b.update(F.sellerDoc(sid, 'orders', o.id), { status: 'pending', saleId: '', deliveredOn: '' });
-    b.set(F.doc(F.db, 'demand', o.id), { sellerKey: sid, items: o.items.map((i) => ({ name: i.name, qty: i.qty })), deliveryDate: o.deliveryDate, updatedAt: Date.now() });
+    b.set(F.doc(F.db, 'demand', o.id), demandDoc(sid, o, null));
   });
   F.audit(b, S.user.uid, 'sale-void', `sellers/${sid}/sales/${saleId}`, { sale, advances: adv }, null);
   F.commit(b, onWriteError);
@@ -2870,7 +2888,19 @@ async function renderScrap() {
 
 // ---------- orders ----------
 const orderText = (o) => o.items.map((i) => `${i.name} × ${i.qty}`).join(', ');
-const orderLineHtml = (i = {}) => `<div class="orderline"><input name="on" list="snames" placeholder="${t('Item')}" value="${esc(i.name || '')}">
+// "To buy": an order item goes there only when its seller taps 🛒. The shared demand/<orderId> doc keeps, per item,
+// how many are still to buy (toBuy). Anyone can mark items bought there; the order itself stays in To carry.
+/** Demand doc for a pending order; toBuy per item comes from `want` (index -> count) or else the previous doc. */
+function demandDoc(sid, o, prev, want = null) {
+  const items = o.items.map((i, k) => {
+    const old = prev?.items?.[k], same = old && String(old.name).trim().toLowerCase() === String(i.name).trim().toLowerCase();
+    const tb = want ? want[k] : same ? Number(old.toBuy) || 0 : 0;
+    return { name: i.name, qty: i.qty, toBuy: Math.max(0, Math.min(Number(i.qty) || 0, Math.round(tb || 0))) };
+  });
+  return { sellerKey: sid, items, deliveryDate: o.deliveryDate, updatedAt: Date.now() };
+}
+const toBuyOf = (dm, k) => Number(dm?.items?.[k]?.toBuy) || 0;
+const orderLineHtml = (i = {}) => `<div class="orderline"><label class="obuy" title="${t('Needs buying')}"><input type="checkbox" name="ob" ${i.toBuy > 0 ? 'checked' : ''}><span>🛒</span></label><input name="on" list="snames" placeholder="${t('Item')}" value="${esc(i.name || '')}">
   <input name="oq" type="number" min="1" inputmode="numeric" value="${i.qty || 1}"><button type="button" class="x" data-orm>×</button></div>`;
 
 /** Warnings (never blocks) before giving goods to a customer: low score, flags, other sellers, a low starting score note. */
@@ -2892,6 +2922,8 @@ async function renderOrderForm(cid, oid) {
   if (!c) return go('#/customers');
   setTitle(`${o ? t('Order') : t('New order')} · ${c.name}`, true);
   const def = o?.deliveryDate || L.nextRouteDate(daysOf(c), today());
+  let prevDm = null;
+  if (o) { const dd = await F.getDoc(F.doc(F.db, 'demand', o.id)).catch(() => null); prevDm = dd?.exists() ? dd.data() : null; o.items = o.items.map((i, k) => ({ ...i, toBuy: toBuyOf(prevDm, k) })); }
   // Warn (never block) before taking an order from a risky or flagged customer.
   const warns = riskWarnings(c);
   view.innerHTML = `${warns.length ? `<div class="banner warn"><b>⚠ ${t('Check before delivering')}</b>${warns.map((w) => `<div class="small">${w}</div>`).join('')}</div>` : ''}
@@ -2903,28 +2935,31 @@ async function renderOrderForm(cid, oid) {
     <button type="button" class="btn ghost small" id="addO">+ ${t('Another item')}</button>
     <label>${t('Deliver on')} <small class="muted">(${t('next route day')})</small><input name="dd" type="date" value="${def}" required></label>
     <label>${t('Note (optional)')}<input name="note" value="${esc(o?.note || '')}"></label>
-    <p class="muted small">${t('No advance is taken on an order. When you deliver, the sale is entered as usual.')}</p>
+    <p class="muted small">🛒 = ${t('not in hand, needs buying: the item also shows in To buy.')} ${t('No advance is taken on an order. When you deliver, the sale is entered as usual.')}</p>
     <button class="btn primary" type="submit">${t('Save order')}</button>
     ${o && o.status === 'pending' ? `<div class="contact"><a class="btn" href="#/deliver/${o.id}">✓ ${t('Delivered')}</a><button type="button" class="btn" id="nw">+7 ${t('Next week')}</button><button type="button" class="btn danger" id="ocx">${t('Cancel order')}</button></div>` : ''}</form>`;
   const f = $('#of');
   const bind = () => { $$('[data-orm]', f).forEach((b) => (b.onclick = () => { if ($$('.orderline', f).length > 1) b.parentElement.remove(); })); };
   $('#addO').onclick = () => { $('#olines').insertAdjacentHTML('beforeend', orderLineHtml()); bind(); };
   bind();
-  const save = (patch) => {
+  const save = (patch, want = null) => {
     const b = F.writeBatch(F.db), id = o?.id || F.newId(F.sellerCol(sid, 'orders'));
     const doc = { ...(o || { customerId: cid, customerName: c.name, status: 'pending', createdAt: Date.now(), by: S.user.uid }), ...patch };
     delete doc.id;
+    doc.items = doc.items.map(({ name, qty }) => ({ name, qty }));
     b.set(F.sellerDoc(sid, 'orders', id), doc);
-    if (doc.status === 'pending') b.set(F.doc(F.db, 'demand', id), { sellerKey: sid, items: doc.items.map((i) => ({ name: i.name, qty: i.qty })), deliveryDate: doc.deliveryDate, updatedAt: Date.now() });
+    if (doc.status === 'pending') b.set(F.doc(F.db, 'demand', id), demandDoc(sid, doc, prevDm, want));
     else b.delete(F.doc(F.db, 'demand', id));
     F.commit(b, onWriteError);
     return id;
   };
   f.onsubmit = (e) => {
     e.preventDefault();
-    const items = $$('.orderline', f).map((r) => ({ name: $('[name=on]', r).value.trim(), qty: Math.max(1, Math.round(num($('[name=oq]', r).value))) })).filter((i) => i.name);
-    if (!items.length) return toast(t('Add at least one item'), true);
-    save({ items, deliveryDate: f.dd.value, note: f.note.value.trim(), customerName: c.name });
+    const lines = $$('.orderline', f).map((r) => ({ name: $('[name=on]', r).value.trim(), qty: Math.max(1, Math.round(num($('[name=oq]', r).value))), buy: $('[name=ob]', r).checked })).filter((i) => i.name);
+    if (!lines.length) return toast(t('Add at least one item'), true);
+    // 🛒 on: keep what is still to buy for an unchanged item (part may be bought already), else the whole quantity
+    const want = lines.map((i) => { if (!i.buy) return 0; const old = o?.items?.find((x) => x.name.trim().toLowerCase() === i.name.toLowerCase() && x.toBuy > 0); return old ? Math.min(old.toBuy, i.qty) : i.qty; });
+    save({ items: lines.map(({ name, qty }) => ({ name, qty })), deliveryDate: f.dd.value, note: f.note.value.trim(), customerName: c.name }, want);
     let back = ''; try { back = sessionStorage.getItem('orderBack') || ''; sessionStorage.removeItem('orderBack'); } catch {}
     toast(t('Order saved')); go(back || `#/customer/${cid}`);
   };
@@ -2968,25 +3003,44 @@ async function renderOrders() {
       <button data-ot="buy" class="${tab === 'buy' ? 'on' : ''}">${t('To buy')}</button>${S.sid ? `<button data-ot="all" class="${tab === 'all' ? 'on' : ''}">${t('All pending')}</button>` : ''}</div>`;
     view.innerHTML = tabs + '<div class="loading">…</div>';
     let body = '';
+    let dms = {};
     if (tab === 'buy') {
       const demand = await F.fetchAll(F.collection(F.db, 'demand'));
-      const rows = L.toBuy(demand, []);
-      const tr = (r) => `<tr><td>${esc(r.name)}<small>${t('first needed')} ${fmtDate(r.first)}</small></td><td><b>${r.qty}</b></td></tr>`;
-      body = `<p class="muted small">${t('Pending orders of all sellers added up by item. Customer names are not shown here.')}</p>
-        <h3>🛒 ${t('Ordered items')}</h3>${rows.length ? `<table class="rep"><thead><tr><th>${t('Item')}</th><th>${t('Ordered')}</th></tr></thead><tbody>${rows.map(tr).join('')}</tbody></table>` : `<div class="muted small">${t('No pending orders')}</div>`}`;
+      dms = Object.fromEntries(demand.map((d) => [d.id, d]));
+      // per seller (names are spelt differently by each seller), same item name added up inside a seller
+      const groups = {};
+      for (const d of demand) (d.items || []).forEach((i, k) => {
+        if (!(Number(i.toBuy) > 0)) return;
+        const g = (groups[d.sellerKey] ||= {}), key = String(i.name).trim().toLowerCase();
+        const r = (g[key] ||= { name: String(i.name).trim(), qty: 0, first: d.deliveryDate, refs: [] });
+        r.qty += Number(i.toBuy); if (d.deliveryDate < r.first) r.first = d.deliveryDate; r.refs.push([d.id, k]);
+      });
+      const keys = Object.keys(groups).sort((x, y) => (x === S.sid ? -1 : y === S.sid ? 1 : sellerName(x).localeCompare(sellerName(y))));
+      S._buy = groups;
+      body = `<p class="muted small">${t('Only items marked 🛒 in an order. Customer names are not shown here.')}</p>
+        ${keys.map((k) => `<h3>${esc(sellerName(k))}</h3><ul class="list">${Object.entries(groups[k]).sort((x, y) => (x[1].first < y[1].first ? -1 : 1)).map(([key, r]) =>
+          `<li class="card buyrow"><div><b>${esc(r.name)}</b> <b class="bq">× ${r.qty}</b><small>${t('first needed')} ${fmtDate(r.first)}</small></div>
+            <button class="btn small primary" data-bought="${esc(k)}|${esc(key)}">✓ ${t('Bought')}</button></li>`).join('')}</ul>`).join('')
+          || `<div class="empty">${t('Nothing to buy. Tap 🛒 on an order item in To carry when it has to be bought.')}</div>`}`;
     } else {
-      const all = (await F.fetchAll(F.query(F.sellerCol(S.sid, 'orders'), F.where('status', '==', 'pending')))).sort((a, b) => (a.deliveryDate < b.deliveryDate ? -1 : 1));
+      const [all, mine] = await Promise.all([F.fetchAll(F.query(F.sellerCol(S.sid, 'orders'), F.where('status', '==', 'pending'))),
+        F.fetchAll(F.query(F.collection(F.db, 'demand'), F.where('sellerKey', '==', S.sid)))]);
+      all.sort((a, b) => (a.deliveryDate < b.deliveryDate ? -1 : 1));
+      dms = Object.fromEntries(mine.map((d) => [d.id, d]));
+      const chips = (o) => `<div class="ichips">${o.items.map((i, k) => { const tb = toBuyOf(dms[o.id], k);
+        return `<button class="ichip ${tb ? 'buy' : ''}" data-tb="${o.id}|${k}" title="${t('Needs buying')}">${tb ? '🛒 ' : ''}${esc(i.name)} × ${i.qty}${tb && tb < i.qty ? ` <small>(${tb} ${t('to buy')})</small>` : ''}</button>`; }).join('')}</div>`;
       if (tab === 'carry') {
         const wd = L.weekdayOf(day), list = all.filter((o) => o.deliveryDate <= day);
         const pos = new Map(L.routeSort(Object.values(S.customers), wd).map((c, i) => [c.id, i]));
         list.sort((a, b) => (pos.get(a.customerId) ?? 1e9) - (pos.get(b.customerId) ?? 1e9));
-        const agg = {}; list.forEach((o) => o.items.forEach((i) => { const k = i.name.trim(); agg[k] = (agg[k] || 0) + Number(i.qty || 0); }));
+        const agg = {}; list.forEach((o) => o.items.forEach((i, k) => { const n = i.name.trim(), x = (agg[n] ||= { ready: 0, buy: 0 }), tb = toBuyOf(dms[o.id], k); x.buy += tb; x.ready += Math.max(0, Number(i.qty || 0) - tb); }));
         body = `<div class="toolbar"><input type="date" id="od" value="${day}"></div>
-          <div class="card"><b>📦 ${t('Load these items')}</b>${Object.entries(agg).map(([n, q]) => `<div class="kv"><span>${esc(n)}</span><span><b>× ${q}</b></span></div>`).join('') || `<div class="muted small">${t('No deliveries for this day')}</div>`}</div>
-          <ul class="list">${list.map((o) => { const c = S.customers[o.customerId]; return `<li><a class="row" href="#/order-edit/${o.id}"><div>${placeBadge(c)}<b>${esc(o.customerName)}</b><small>${esc(orderText(o))}</small>${noteLine(o)}</div>
-            <span class="pill ${o.deliveryDate < day ? 'bad' : 'ok'}">${o.deliveryDate < day ? t('Late') + ' ' + shortDate(o.deliveryDate) : shortDate(o.deliveryDate)}</span></a></li>`; }).join('')}</ul>`;
+          <div class="card"><b>📦 ${t('Load these items')}</b>${Object.entries(agg).map(([n, q]) => `<div class="kv"><span>${esc(n)}</span><span>${q.ready ? `<b>× ${q.ready}</b>` : ''}${q.buy ? ` <span class="pill bad">🛒 ${q.buy} ${t('still to buy')}</span>` : ''}</span></div>`).join('') || `<div class="muted small">${t('No deliveries for this day')}</div>`}</div>
+          <p class="muted small">${t('Tap an item to send it to To buy (🛒); tap again to take it back.')}</p>
+          <ul class="list">${list.map((o) => { const c = S.customers[o.customerId]; return `<li class="card ordcard"><a class="row" href="#/order-edit/${o.id}"><div>${placeBadge(c)}<b>${esc(o.customerName)}</b>${noteLine(o)}</div>
+            <span class="pill ${o.deliveryDate < day ? 'bad' : 'ok'}">${o.deliveryDate < day ? t('Late') + ' ' + shortDate(o.deliveryDate) : shortDate(o.deliveryDate)}</span></a>${chips(o)}</li>`; }).join('')}</ul>`;
       } else {
-        body = `<ul class="list">${all.map((o) => `<li class="card"><div class="row" style="padding:0"><div><b>${esc(o.customerName)}</b><small>${esc(orderText(o))}</small>${noteLine(o)}</div><span class="pill ${o.deliveryDate < today() ? 'bad' : ''}">${fmtDate(o.deliveryDate)}</span></div>
+        body = `<ul class="list">${all.map((o) => `<li class="card"><div class="row" style="padding:0"><div><b>${esc(o.customerName)}</b>${noteLine(o)}</div><span class="pill ${o.deliveryDate < today() ? 'bad' : ''}">${fmtDate(o.deliveryDate)}</span></div>${chips(o)}
           <div class="contact"><a class="btn small" href="#/deliver/${o.id}">✓ ${t('Delivered')}</a><input type="date" data-od="${o.id}" value="${o.deliveryDate}" style="flex:1;margin:0"><button class="btn small" data-nw="${o.id}">+7</button><button class="btn small danger" style="width:auto" data-ocx="${o.id}">×</button></div></li>`).join('') || `<li class="muted">${t('No pending orders')}</li>`}</ul>`;
       }
       S._orders = all;
@@ -2998,12 +3052,35 @@ async function renderOrders() {
     const upd = (id, patch) => {
       const o = S._orders.find((x) => x.id === id), b = F.writeBatch(F.db);
       b.update(F.sellerDoc(S.sid, 'orders', id), patch);
-      if (patch.status === 'cancelled') b.delete(F.doc(F.db, 'demand', id)); else b.set(F.doc(F.db, 'demand', id), { sellerKey: S.sid, items: o.items, deliveryDate: patch.deliveryDate || o.deliveryDate, updatedAt: Date.now() });
+      if (patch.status === 'cancelled') b.delete(F.doc(F.db, 'demand', id)); else b.set(F.doc(F.db, 'demand', id), demandDoc(S.sid, { ...o, ...patch }, dms[id]));
       F.commit(b, onWriteError); setTimeout(draw, 250);
     };
     $$('[data-od]').forEach((i) => (i.onchange = () => i.value && upd(i.dataset.od, { deliveryDate: i.value })));
     $$('[data-nw]').forEach((b) => (b.onclick = () => { const o = S._orders.find((x) => x.id === b.dataset.nw); upd(o.id, { deliveryDate: L.addDays(o.deliveryDate, 7) }); }));
     $$('[data-ocx]').forEach((b) => (b.onclick = () => { if (confirm(t('Cancel this order?'))) upd(b.dataset.ocx, { status: 'cancelled', cancelledOn: today() }); }));
+    // 🛒 on one item of an order: all of it to buy, or back to "in hand"
+    $$('[data-tb]').forEach((btn) => (btn.onclick = () => {
+      const [id, k] = btn.dataset.tb.split('|'), o = S._orders.find((x) => x.id === id); if (!o) return;
+      const want = o.items.map((_, j) => toBuyOf(dms[id], j)); want[k] = want[k] > 0 ? 0 : Number(o.items[k].qty) || 1;
+      const b = F.writeBatch(F.db); b.set(F.doc(F.db, 'demand', id), demandDoc(S.sid, o, dms[id], want)); F.commit(b, onWriteError);
+      toast(want[k] ? `🛒 ${o.items[k].name} → ${t('To buy')}` : `${o.items[k].name}: ${t('in hand')}`); setTimeout(draw, 250);
+    }));
+    // ✓ Bought (anyone): how many, then earliest delivery first; the rest stays in To buy
+    $$('[data-bought]').forEach((btn) => (btn.onclick = async () => {
+      const [k, key] = btn.dataset.bought.split('|'), r = S._buy?.[k]?.[key]; if (!r) return;
+      let n = r.qty;
+      if (r.qty > 1) { n = await askNumber(`${r.name}: ${t('how many did you buy?')}`, r.qty, r.qty); if (n == null) return; }
+      const refs = r.refs.slice().sort((x, y) => (dms[x[0]].deliveryDate < dms[y[0]].deliveryDate ? -1 : 1)), touched = {};
+      for (const [id, j] of refs) {
+        if (n <= 0) break;
+        const d = (touched[id] ||= structuredClone(dms[id])), take = Math.min(n, Number(d.items[j].toBuy) || 0);
+        d.items[j].toBuy -= take; n -= take;
+      }
+      const b = F.writeBatch(F.db);
+      for (const [id, d] of Object.entries(touched)) b.update(F.doc(F.db, 'demand', id), { items: d.items, updatedAt: Date.now(), boughtBy: S.user.uid });
+      F.audit(b, S.user.uid, 'bought', `demand/${r.refs[0][0]}`, { item: r.name, seller: k, toBuy: r.qty }, { bought: r.qty - Math.max(0, n) });
+      F.commit(b, onWriteError); toast(`✓ ${r.name}`); setTimeout(draw, 250);
+    }));
   };
   await draw();
 }

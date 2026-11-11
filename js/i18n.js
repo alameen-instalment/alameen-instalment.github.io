@@ -1,5 +1,15 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Needs buying': 'വാങ്ങണം',
+  'not in hand, needs buying: the item also shows in To buy.': 'കയ്യിലില്ല, വാങ്ങണം: ഈ ഐറ്റം To buy-ലും കാണും.',
+  'Only items marked 🛒 in an order. Customer names are not shown here.': 'ഓർഡറുകളിൽ 🛒 അടയാളപ്പെടുത്തിയ ഐറ്റങ്ങൾ മാത്രം. കസ്റ്റമർമാരുടെ പേര് ഇവിടെ കാണിക്കില്ല.',
+  'Bought': 'വാങ്ങി',
+  'Nothing to buy. Tap 🛒 on an order item in To carry when it has to be bought.': 'വാങ്ങാനൊന്നുമില്ല. വാങ്ങേണ്ട ഐറ്റമാണെങ്കിൽ To carry-യിൽ അതിൽ അമർത്തി 🛒 ആക്കുക.',
+  'to buy': 'വാങ്ങാൻ',
+  'still to buy': 'ഇനിയും വാങ്ങാനുണ്ട്',
+  'Tap an item to send it to To buy (🛒); tap again to take it back.': 'ഐറ്റത്തിൽ അമർത്തിയാൽ To buy-ലേക്ക് പോകും (🛒); വീണ്ടും അമർത്തിയാൽ തിരികെ വരും.',
+  'in hand': 'കയ്യിലുണ്ട്',
+  'how many did you buy?': 'എത്ര എണ്ണം വാങ്ങി?',
   'Starting score set by the seller; payments will decide it from now on.': 'സെല്ലർ സെറ്റ് ചെയ്ത തുടക്ക സ്കോർ; ഇനി പേയ്മെന്റുകൾ തീരുമാനിക്കും.',
   'Starting score': 'തുടക്ക സ്കോർ',
   'from payments': 'പേയ്മെന്റ് അനുസരിച്ച്',
