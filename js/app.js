@@ -308,6 +308,7 @@ const routes = [
   [/^#\/shop-link$/, renderShopLink],
   [/^#\/scrap$/, renderScrap],
   [/^#\/orders$/, renderOrders],
+  [/^#\/order-random$/, () => renderOrderForm(null, null, true)],
   [/^#\/order\/(\w+)$/, (cid) => renderOrderForm(cid, null)],
   [/^#\/order-edit\/(\w+)$/, (oid) => renderOrderForm(null, oid)],
   [/^#\/deliver\/(\w+)$/, renderDeliver],
@@ -1489,7 +1490,7 @@ function renderPick(action) {
     $('#plist').innerHTML = html || `<li class="muted">${t('No matching customer')}</li>`;
     $$('[data-pick-order]').forEach((a) => (a.onclick = () => { try { sessionStorage.setItem('orderBack', '#/orders'); } catch {} }));
   };
-  view.innerHTML = `<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}" autofocus><a class="btn" href="#/customer-new">+ ${t('New customer')}</a></div><ul class="list" id="plist"></ul>`;
+  view.innerHTML = `${action === 'order' ? `<a class="btn block" href="#/order-random" id="randOrd" style="margin-bottom:8px">🎲 ${t('Random order (not a customer)')}</a>` : ''}<div class="toolbar"><input id="q" type="search" placeholder="${t('Search name or phone')}" autofocus><a class="btn" href="#/customer-new">+ ${t('New customer')}</a></div><ul class="list" id="plist"></ul>`;
   $('#q').oninput = draw;
   draw();
   const sid = S.sid;
@@ -1933,6 +1934,7 @@ function renderSale(cid, aid) {
       b.set(F.doc(ccol, F.newId(ccol)), { accountId: aid, customerId: cid, date, amount: adv, kind: 'advance', mode: advMode, ...upiTag(advMode, pickedUpi('upito')), saleId, note: '', allocations: r.allocations, profit: r.profit, createdAt: now, by: S.user.uid });
     }
     b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(L.round2(value - adv)), status: 'open', ...(a.inactive ? setActive(a, true) : {}) });
+    if (draft?.orderId) orderDelivered(b, sid, draft.orderId, date, saleId, { customerId: cid, accountId: aid, customerName: c.name });
     if (order) {
       b.update(F.sellerDoc(sid, 'orders', order.id), { status: 'delivered', deliveredOn: date, saleId, accountId: aid });
       b.delete(F.doc(F.db, 'demand', order.id));
@@ -2067,11 +2069,17 @@ function writeCashSale(b, sid, { lines, value, cost, pays, date, name, phone, di
  * Part-paid cash sale turned into a customer: put the sale and what was paid (as advances) into the new
  * customer's first account. Writes into the batch and returns the account doc with its queue and balance.
  */
+/** Mark an order delivered (and drop it from To buy) inside a batch. */
+function orderDelivered(b, sid, orderId, date, saleId, extra = {}) {
+  b.update(F.sellerDoc(sid, 'orders', orderId), { status: 'delivered', deliveredOn: date, saleId, ...extra });
+  b.delete(F.doc(F.db, 'demand', orderId));
+}
 function applyPendingSale(b, sid, cid, aid, acc, pend, custName) {
   const scol = F.sellerCol(sid, 'sales'), saleId = F.newId(scol), now = Date.now(), date = pend.date || today();
   const pays = pend.pays.filter((p) => p.amount > 0), paid = L.round2(pays.reduce((s, p) => s + p.amount, 0));
   b.set(F.doc(scol, saleId), { accountId: aid, customerId: cid, date, items: pend.lines, saleValue: pend.value, cost: pend.cost, advance: paid, ...(pend.discount > 0 ? { saleDiscount: pend.discount, listValue: pend.listValue } : {}), creditedValue: 0, creditedCost: 0, fromCashSale: true, costEstimated: true, createdAt: now, by: S.user.uid });
   rememberItems(b, sid, pend.lines);
+  if (pend.orderId) orderDelivered(b, sid, pend.orderId, date, saleId, { customerId: cid, accountId: aid, customerName: custName });
   let queue = L.addSaleToQueue(acc.queue || [], saleId, date, pend.value, pend.cost);
   const ccol = F.sellerCol(sid, 'collections');
   pays.forEach((p, k) => {
@@ -2093,7 +2101,9 @@ function renderCashSale() {
   const sid = S.sid;
   setTitle(t('Cash sale'), true);
   try { sessionStorage.removeItem('pendingCash'); } catch {} // a part-paid cart left behind is dropped
-  const rows = [];
+  let cdraft = null; // a random order being delivered
+  try { const x = JSON.parse(sessionStorage.getItem('cashDraft') || 'null'); sessionStorage.removeItem('cashDraft'); if (x && Date.now() - x.at < 3600e3) cdraft = x; } catch {}
+  const rows = cdraft ? cdraft.rows.slice() : [];
   let cashTouched = false, tot = 0;
   view.innerHTML = `
     <div class="card form" id="csf">
@@ -2101,8 +2111,9 @@ function renderCashSale() {
       <div class="row total"><span>${t('Total')}</span><b id="total">₹0</b></div>
       <label>${t('Cash discount ₹')}<input id="cdisc" type="number" step="any" min="0" inputmode="decimal" placeholder="0"></label>
       <div class="row total" id="netRow" hidden><span>${t('To pay')}</span><b id="net">₹0</b></div>
-      <div class="two"><label>${t('Name (optional)')}<input id="bname" autocomplete="off"></label>
-        <label>${t('Phone (optional)')}<input id="bphone" type="tel" inputmode="tel" autocomplete="off"></label></div>
+      ${cdraft ? `<div class="banner"><b>🎲 ${t('Delivering a random order')}</b></div>` : ''}
+      <div class="two"><label>${t('Name (optional)')}<input id="bname" autocomplete="off" value="${esc(cdraft?.name || '')}"></label>
+        <label>${t('Phone (optional)')}<input id="bphone" type="tel" inputmode="tel" autocomplete="off" value="${esc(cdraft?.phone || '')}"></label></div>
       <div id="custHint"></div>
       <label>${t('Paid')}</label>
       <div class="two"><label>${t('Cash')}<input id="pcash" type="number" step="any" min="0" inputmode="decimal"></label>
@@ -2138,7 +2149,7 @@ function renderCashSale() {
       const cid = btn.dataset.tocust, accs = accountsOf(cid).filter((a) => a.status !== 'closed'), acc = accs[0] || accountsOf(cid)[0];
       if (!acc) return go(`#/customer/${cid}`);
       const cash = num($('#pcash').value), upi = num($('#pupi').value);
-      try { sessionStorage.setItem('saleDraft', JSON.stringify({ cid, rows: rows.filter((r) => r.name.trim()), discount: disc(), advance: L.round2(cash + upi), mode: upi > cash ? 'upi' : 'cash', at: Date.now() })); } catch {}
+      try { sessionStorage.setItem('saleDraft', JSON.stringify({ cid, rows: rows.filter((r) => r.name.trim()), discount: disc(), advance: L.round2(cash + upi), mode: upi > cash ? 'upi' : 'cash', orderId: cdraft?.orderId || '', at: Date.now() })); } catch {}
       go(`#/sale/${cid}/${acc.id}`);
     }));
   };
@@ -2160,12 +2171,13 @@ function renderCashSale() {
     if (paid > v + 0.005) return toast(t('Paid is more than the total'), true);
     if (paid < v - 0.005) {
       if (!confirm(`${t('Balance')} ${money(L.round2(v - paid))}.\n${t('A balance needs a customer account. Add this buyer as a customer now? The sale and what was paid go into their account.')}`)) return;
-      try { sessionStorage.setItem('pendingCash', JSON.stringify({ lines: D.lines, value: v, cost, discount: D.discount, listValue: D.listValue, pays: p.filter((x) => x.amount > 0), date, name, phone, at: Date.now() })); } catch {}
+      try { sessionStorage.setItem('pendingCash', JSON.stringify({ lines: D.lines, value: v, cost, discount: D.discount, listValue: D.listValue, pays: p.filter((x) => x.amount > 0), date, name, phone, orderId: cdraft?.orderId || '', at: Date.now() })); } catch {}
       return go('#/customer-new');
     }
     if ($('#saveCash').disabled) return; $('#saveCash').disabled = true;
     const b = F.writeBatch(F.db);
     const saleId = writeCashSale(b, sid, { lines: D.lines, value: v, cost, pays: p, date, name, phone, discount: D.discount, listValue: D.listValue });
+    if (cdraft?.orderId) orderDelivered(b, sid, cdraft.orderId, date, saleId);
     F.audit(b, S.user.uid, 'cash-sale', `sellers/${sid}/sales/${saleId}`, null, { value: v, discount: D.discount, paid, buyer: name });
     F.commit(b, onWriteError);
     try { sessionStorage.setItem('cashRcpt', JSON.stringify({ saleId, phone, text: cashReceiptText({ date, items: D.lines, saleValue: v, saleDiscount: D.discount, buyerName: name }, p), at: Date.now() })); } catch {}
@@ -3265,38 +3277,44 @@ function riskWarnings(c) {
   return warns;
 }
 
-async function renderOrderForm(cid, oid) {
+// A "random" order: someone met on the road who is not a customer (optional name / landmark, phone, route day).
+// It is delivered through a cash sale.
+async function renderOrderForm(cid, oid, random = false) {
   if (needSeller()) return;
   const sid = S.sid;
   let o = null;
-  if (oid) { const d = await F.getDoc(F.sellerDoc(sid, 'orders', oid)); if (!d.exists()) return go('#/orders'); o = { id: oid, ...d.data() }; cid = o.customerId; }
-  const c = S.customers[cid];
-  if (!c) return go('#/customers');
-  setTitle(`${o ? t('Order') : t('New order')} · ${c.name}`, true);
-  const def = o?.deliveryDate || L.nextRouteDate(daysOf(c), today());
+  if (oid) { const d = await F.getDoc(F.sellerDoc(sid, 'orders', oid)); if (!d.exists()) return go('#/orders'); o = { id: oid, ...d.data() }; cid = o.customerId; random = !!o.random; }
+  const c = random ? null : S.customers[cid];
+  if (!random && !c) return go('#/customers');
+  setTitle(`${o ? t('Order') : t('New order')} · ${random ? '🎲 ' + (o?.buyerName || t('Random order')) : c.name}`, true);
+  const def = o?.deliveryDate || (random ? (o?.routeDay != null ? L.nextRouteDate([o.routeDay], today()) : L.addDays(today(), 7)) : L.nextRouteDate(daysOf(c), today()));
   let prevDm = null;
   if (o) { const dd = await F.getDoc(F.doc(F.db, 'demand', o.id)).catch(() => null); prevDm = dd?.exists() ? dd.data() : null; o.items = o.items.map((i, k) => ({ ...i, toBuy: toBuyOf(prevDm, k) })); }
   // Warn (never block) before taking an order from a risky or flagged customer.
-  const warns = riskWarnings(c);
+  const warns = random ? [] : riskWarnings(c);
   view.innerHTML = `${warns.length ? `<div class="banner warn"><b>⚠ ${t('Check before delivering')}</b>${warns.map((w) => `<div class="small">${w}</div>`).join('')}</div>` : ''}
-    <div class="row" style="padding:4px 2px">${scoreBadges(c)}</div>
+    ${random ? '' : `<div class="row" style="padding:4px 2px">${scoreBadges(c)}</div>`}
     <form id="of" class="card form">
+    ${random ? `<div class="two"><label>${t('Name / landmark')} <small class="muted">(${t('optional')})</small><input name="bn" value="${esc(o?.buyerName || '')}" placeholder="${t('e.g. near the tea shop')}"></label>
+      <label>${t('Phone (optional)')}<input name="bp" type="tel" inputmode="tel" value="${esc(o?.buyerPhone || '')}"></label></div>
+      <label>${t('Route day')} <small class="muted">(${t('optional')})</small><select name="rday"><option value="">—</option>${ROUTE_DAYS.map((d) => `<option value="${d}" ${o?.routeDay === d ? 'selected' : ''}>${dayLabel(d)}</option>`).join('')}</select></label>` : ''}
     ${o && o.status !== 'pending' ? `<div class="banner warn">${o.status === 'delivered' ? '✓ ' + t('Delivered') + ' ' + fmtDate(o.deliveredOn) : t('Cancelled')}</div>` : ''}
     <label>${t('Items')}</label><div id="olines">${(o?.items || [{}]).map(orderLineHtml).join('')}</div>
     <datalist id="snames">${knownNames().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
     <button type="button" class="btn ghost small" id="addO">+ ${t('Another item')}</button>
-    <label>${t('Deliver on')} <small class="muted">(${t('next route day')})</small><input name="dd" type="date" value="${def}" required></label>
+    <label>${t('Deliver on')} <small class="muted">(${random ? t('a week from today, or the next chosen route day') : t('next route day')})</small><input name="dd" type="date" value="${def}" required></label>
     <label>${t('Note (optional)')}<input name="note" value="${esc(o?.note || '')}"></label>
-    <p class="muted small">🛒 = ${t('not in hand, needs buying: the item also shows in To buy.')} ${t('No advance is taken on an order. When you deliver, the sale is entered as usual.')}</p>
+    <p class="muted small">🛒 = ${t('not in hand, needs buying: the item also shows in To buy.')} ${random ? t('When you deliver, a cash sale opens with these items.') : t('No advance is taken on an order. When you deliver, the sale is entered as usual.')}</p>
     <button class="btn primary" type="submit">${t('Save order')}</button>
     ${o && o.status === 'pending' ? `<div class="contact"><a class="btn" href="#/deliver/${o.id}">✓ ${t('Delivered')}</a><button type="button" class="btn" id="nw">+7 ${t('Next week')}</button><button type="button" class="btn danger" id="ocx">${t('Cancel order')}</button></div>` : ''}</form>`;
   const f = $('#of');
   const bind = () => { $$('[data-orm]', f).forEach((b) => (b.onclick = () => { if ($$('.orderline', f).length > 1) b.parentElement.remove(); })); };
   $('#addO').onclick = () => { $('#olines').insertAdjacentHTML('beforeend', orderLineHtml()); bind(); };
   bind();
+  if (random) { let touched = !!o; f.dd.oninput = () => { touched = true; }; f.rday.onchange = () => { if (!touched) f.dd.value = f.rday.value === '' ? L.addDays(today(), 7) : L.nextRouteDate([Number(f.rday.value)], today()); }; }
   const save = (patch, want = null) => {
     const b = F.writeBatch(F.db), id = o?.id || F.newId(F.sellerCol(sid, 'orders'));
-    const doc = { ...(o || { customerId: cid, customerName: c.name, status: 'pending', createdAt: Date.now(), by: S.user.uid }), ...patch };
+    const doc = { ...(o || { customerId: random ? null : cid, customerName: random ? t('Random order') : c.name, ...(random ? { random: true } : {}), status: 'pending', createdAt: Date.now(), by: S.user.uid }), ...patch };
     delete doc.id;
     doc.items = doc.items.map(({ name, qty }) => ({ name, qty }));
     b.set(F.sellerDoc(sid, 'orders', id), doc);
@@ -3311,9 +3329,10 @@ async function renderOrderForm(cid, oid) {
     if (!lines.length) return toast(t('Add at least one item'), true);
     // 🛒 on: keep what is still to buy for an unchanged item (part may be bought already), else the whole quantity
     const want = lines.map((i) => { if (!i.buy) return 0; const old = o?.items?.find((x) => x.name.trim().toLowerCase() === i.name.toLowerCase() && x.toBuy > 0); return old ? Math.min(old.toBuy, i.qty) : i.qty; });
-    save({ items: lines.map(({ name, qty }) => ({ name, qty })), deliveryDate: f.dd.value, note: f.note.value.trim(), customerName: c.name }, want);
+    const who = random ? { buyerName: f.bn.value.trim(), buyerPhone: f.bp.value.trim(), routeDay: f.rday.value === '' ? null : Number(f.rday.value), customerName: f.bn.value.trim() || t('Random order') } : { customerName: c.name };
+    save({ items: lines.map(({ name, qty }) => ({ name, qty })), deliveryDate: f.dd.value, note: f.note.value.trim(), ...who }, want);
     let back = ''; try { back = sessionStorage.getItem('orderBack') || ''; sessionStorage.removeItem('orderBack'); } catch {}
-    toast(t('Order saved')); go(back || `#/customer/${cid}`);
+    toast(t('Order saved')); go(back || (random ? '#/orders' : `#/customer/${cid}`));
   };
   const nw = $('#nw'), cx = $('#ocx');
   if (nw) nw.onclick = () => { save({ deliveryDate: L.addDays(o.deliveryDate, 7) }); toast(t('Moved to') + ' ' + fmtDate(L.addDays(o.deliveryDate, 7))); history.back(); };
@@ -3325,6 +3344,10 @@ async function renderDeliver(oid) {
   const sid = S.sid, d = await F.getDoc(F.sellerDoc(sid, 'orders', oid));
   if (!d.exists()) return go('#/orders');
   const o = { id: oid, ...d.data() }, c = S.customers[o.customerId];
+  if (o.random) { // not a customer: deliver through a cash sale
+    try { sessionStorage.setItem('cashDraft', JSON.stringify({ orderId: oid, name: o.buyerName || '', phone: o.buyerPhone || '', rows: o.items.map((i) => ({ name: i.name, qty: Number(i.qty) || 1, price: Number(lastPrice(i.name)) || 0 })), at: Date.now() })); } catch {}
+    return go('#/cash-sale');
+  }
   if (!c) return go('#/orders');
   try { sessionStorage.setItem('saleOrder', JSON.stringify(o)); } catch {}
   const open = accountsOf(c.id).filter((a) => a.status !== 'closed');
@@ -3390,10 +3413,12 @@ async function renderOrders() {
         body = `<div class="toolbar"><input type="date" id="od" value="${day}"></div>
           <div class="card"><b>📦 ${t('Load these items')}</b>${Object.entries(agg).map(([n, q]) => `<div class="kv"><span>${esc(n)}</span><span>${q.ready ? `<b>× ${q.ready}</b>` : ''}${q.buy ? ` <span class="pill bad">🛒 ${q.buy} ${t('still to buy')}</span>` : ''}</span></div>`).join('') || `<div class="muted small">${t('No deliveries for this day')}</div>`}</div>
           <p class="muted small">${t('Tap an item to send it to To buy (🛒); tap again to take it back.')}</p>
-          <ul class="list">${list.map((o) => { const c = S.customers[o.customerId]; return `<li class="card ordcard"><a class="row" href="#/order-edit/${o.id}"><div>${placeBadge(c)}<b>${esc(o.customerName)}</b>${noteLine(o)}</div>
+          <ul class="list">${[...list.filter((o) => o.random), ...list.filter((o) => !o.random)].map((o, i, arr) => { const c = S.customers[o.customerId];
+            const head = o.random && i === 0 ? `<li class="lanehead moved">🎲 ${t('Random orders')}</li>` : !o.random && i > 0 && arr[i - 1].random ? `<li class="lanehead">${t('Customers')}</li>` : '';
+            return `${head}<li class="card ordcard"><a class="row" href="#/order-edit/${o.id}"><div>${placeBadge(c)}<b>${o.random ? '🎲 ' : ''}${esc(o.customerName)}</b>${o.random ? `<small>${[o.routeDay != null ? dayLabel(o.routeDay) : '', esc(o.buyerPhone || '')].filter(Boolean).join(' · ')}</small>` : ''}${noteLine(o)}</div>
             <span class="pill ${o.deliveryDate < day ? 'bad' : 'ok'}">${o.deliveryDate < day ? t('Late') + ' ' + shortDate(o.deliveryDate) : shortDate(o.deliveryDate)}</span></a>${chips(o)}</li>`; }).join('')}</ul>`;
       } else {
-        body = `<ul class="list">${all.map((o) => `<li class="card"><div class="row" style="padding:0"><div><b>${esc(o.customerName)}</b>${noteLine(o)}</div><span class="pill ${o.deliveryDate < today() ? 'bad' : ''}">${fmtDate(o.deliveryDate)}</span></div>${chips(o)}
+        body = `<ul class="list">${all.map((o) => `<li class="card"><div class="row" style="padding:0"><div><b>${o.random ? '🎲 ' : ''}${esc(o.customerName)}</b>${o.random && o.routeDay != null ? `<small>${dayLabel(o.routeDay)}</small>` : ''}${noteLine(o)}</div><span class="pill ${o.deliveryDate < today() ? 'bad' : ''}">${fmtDate(o.deliveryDate)}</span></div>${chips(o)}
           <div class="contact"><a class="btn small" href="#/deliver/${o.id}">✓ ${t('Delivered')}</a><input type="date" data-od="${o.id}" value="${o.deliveryDate}" style="flex:1;margin:0"><button class="btn small" data-nw="${o.id}">+7</button><button class="btn small danger" style="width:auto" data-ocx="${o.id}">×</button></div></li>`).join('') || `<li class="muted">${t('No pending orders')}</li>`}</ul>`;
       }
       S._orders = all;

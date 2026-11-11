@@ -1,5 +1,13 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Random order': 'റാൻഡം ഓർഡർ',
+  'Random orders': 'റാൻഡം ഓർഡറുകൾ',
+  'Random order (not a customer)': 'റാൻഡം ഓർഡർ (കസ്റ്റമർ അല്ല)',
+  'Name / landmark': 'പേര് / അടയാളം',
+  'e.g. near the tea shop': 'ഉദാ: ചായക്കടയുടെ അടുത്ത്',
+  'a week from today, or the next chosen route day': 'ഇന്ന് മുതൽ ഒരാഴ്ച, അല്ലെങ്കിൽ തിരഞ്ഞെടുത്ത അടുത്ത റൂട്ട് ദിവസം',
+  'When you deliver, a cash sale opens with these items.': 'ഡെലിവർ ചെയ്യുമ്പോൾ ഈ ഐറ്റങ്ങളോടെ ക്യാഷ് സെയിൽ തുറക്കും.',
+  'Delivering a random order': 'റാൻഡം ഓർഡർ ഡെലിവർ ചെയ്യുന്നു',
   'New customer after this house': 'ഈ വീടിന് ശേഷം പുതിയ കസ്റ്റമർ',
   'Place in route': 'റൂട്ടിൽ സ്ഥാനം',
   'Not set (comes at the end)': 'സെറ്റ് ചെയ്യേണ്ട (അവസാനം വരും)',
