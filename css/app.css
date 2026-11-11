@@ -447,3 +447,10 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .meter { height: 8px; background: var(--line); border-radius: 6px; overflow: hidden; margin-top: 8px; }
 .meter i { display: block; height: 100%; background: var(--accent); }
 .amt small.bad { color: #D2453A; font-weight: 700; }
+/* v29: starting score */
+.prior { padding: 10px 12px; }
+.prior .chk { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 0; }
+.prior .chk input { width: 20px; height: 20px; margin: 0; }
+.prow { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.prow input[type=range] { flex: 1; accent-color: var(--accent); height: 28px; }
+.priorline { margin-top: 6px; font-size: 13px; }

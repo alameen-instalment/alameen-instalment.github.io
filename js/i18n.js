@@ -1,5 +1,16 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Starting score set by the seller; payments will decide it from now on.': 'സെല്ലർ സെറ്റ് ചെയ്ത തുടക്ക സ്കോർ; ഇനി പേയ്മെന്റുകൾ തീരുമാനിക്കും.',
+  'Starting score': 'തുടക്ക സ്കോർ',
+  'from payments': 'പേയ്മെന്റ് അനുസരിച്ച്',
+  'I already know this customer': 'ഇയാളെ എനിക്ക് മുൻപേ അറിയാം',
+  'Starting score from what you know. As payments come in, the app moves to the real payment score (fully after about 8 instalments).': 'നിങ്ങളുടെ അറിവ് വെച്ചുള്ള തുടക്ക സ്കോർ. പേയ്മെന്റുകൾ വരുന്നതിനനുസരിച്ച് ആപ്പ് യഥാർത്ഥ പേയ്മെന്റ് സ്കോറിലേക്ക് മാറും (ഏകദേശം 8 അടവ് കഴിയുമ്പോൾ പൂർണ്ണമായി).',
+  'optional': 'നിർബന്ധമില്ല',
+  'e.g. Known for 10 years / delayed payments before': 'ഉദാ: 10 വർഷമായി അറിയാം / മുമ്പ് പണം വൈകിച്ചിട്ടുണ്ട്',
+  'payments decide now': 'ഇപ്പോൾ പേയ്മെന്റുകൾ തീരുമാനിക്കുന്നു',
+  'Payments will decide the score after 4 weeks of history': '4 ആഴ്ചത്തെ ഇടപാടുകൾക്ക് ശേഷം പേയ്മെന്റുകൾ സ്കോർ തീരുമാനിക്കും',
+  'Check before giving': 'സാധനം കൊടുക്കും മുമ്പ് ശ്രദ്ധിക്കുക',
+  'starting score set by the seller': 'സെല്ലർ സെറ്റ് ചെയ്ത തുടക്ക സ്കോർ',
   'Summary': 'സംഗ്രഹം',
   'Outstanding': 'കിട്ടാനുള്ളത്',
   'Routes': 'റൂട്ടുകൾ',

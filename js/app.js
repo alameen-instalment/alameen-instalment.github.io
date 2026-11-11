@@ -646,8 +646,11 @@ function writeIndex(b, sid, cid, c, hashes) {
 function scoreTip(c) {
   const sc = c.score;
   if (!sc || sc.score == null) return t('New customer — not enough history for a score yet');
+  const pr = sc.prior && sc.prior.w < 1 ? sc.prior : null;
+  if (pr && pr.real == null) return `${t('Score')} ${sc.score}/100 · ${t('Starting score set by the seller; payments will decide it from now on.')}`;
+  const pre = pr ? `${t('Starting score')} ${pr.start} · ${Math.round(pr.w * 100)}% ${t('from payments')} (${pr.real}) · ` : '';
   const p = sc.plan || {}, per = { daily: t('day'), weekly: t('week'), monthly: t('month') }[sc.freq] || t('week');
-  return `${t('Score')} ${sc.score}/100 · ${t('Plan')}: ${rmoney(p.perPeriod)}/${per} · ${p.behind > 0 ? `${rmoney(p.behind)} ${t('behind')} (${p.behindPeriods} ${per})` : t('not behind')} · ${t('Average')} ${rmoney(p.average)}/${per}${sc.promises?.due ? ` · ${t('Promises kept')} ${sc.promises.kept}/${sc.promises.due}` : ''}`;
+  return `${pre}${t('Score')} ${sc.score}/100 · ${t('Plan')}: ${rmoney(p.perPeriod)}/${per} · ${p.behind > 0 ? `${rmoney(p.behind)} ${t('behind')} (${p.behindPeriods} ${per})` : t('not behind')} · ${t('Average')} ${rmoney(p.average)}/${per}${sc.promises?.due ? ` · ${t('Promises kept')} ${sc.promises.kept}/${sc.promises.due}` : ''}`;
 }
 /** Badges: own score in a coloured circle, other sellers' scores as initial + score, flags as a struck-through red circle. */
 function scoreBadges(c, big = false) {
@@ -665,8 +668,8 @@ async function rescore(cid, sid = S.sid) {
   const c = S.customers[cid]; if (!c || !sid) return null;
   const w = F.where('customerId', '==', cid);
   const [sales, cols, visits] = await Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'sales'), w)), F.fetchAll(F.query(F.sellerCol(sid, 'collections'), w)), F.fetchAll(F.query(F.sellerCol(sid, 'visits'), w))]);
-  const r = L.customerScore({ accounts: accountsOf(cid), sales, collections: cols, promises: visits.filter((v) => v.promiseDate), today: today() });
-  const score = { score: r.score ?? null, band: r.band, parts: r.parts || null, plan: r.plan || null, freq: r.freq || 'weekly', promises: r.promises || null, capped: r.capped || '', at: today() };
+  const r = L.customerScore({ accounts: accountsOf(cid), sales, collections: cols, promises: visits.filter((v) => v.promiseDate), today: today(), prior: c.prior?.score ?? null });
+  const score = { score: r.score ?? null, band: r.band, parts: r.parts || null, plan: r.plan || null, freq: r.freq || 'weekly', promises: r.promises || null, capped: r.capped || '', prior: r.prior || null, at: today() };
   const changed = JSON.stringify({ ...c.score, at: 0 }) !== JSON.stringify({ ...score, at: 0 });
   if (changed || c.score?.at !== today()) {
     const b = F.writeBatch(F.db);
@@ -881,6 +884,13 @@ function renderCustomerForm(id) {
     <div class="contact"><button type="button" class="btn ghost small" id="addPhone">+ ${t('Another number')}</button>${canPickContact() ? `<button type="button" class="btn ghost small" id="fromContacts">📇 ${t('From contacts')}</button>` : ''}</div>
     <label>${t('Address')}<textarea name="address" rows="2">${esc(c?.address)}</textarea></label>
     <label>${t('Route day')}</label>${dayPicker(daysOf(c))}
+    <div class="card prior">
+      <label class="chk"><input type="checkbox" name="pk" ${c?.prior ? 'checked' : ''}> ${t('I already know this customer')}</label>
+      <div id="priorBox" ${c?.prior ? '' : 'hidden'}>
+        <div class="prow"><input type="range" name="ps" min="0" max="100" step="5" value="${c?.prior?.score ?? 70}" aria-label="${t('Starting score')}"><span id="psv" class="sc big"></span></div>
+        <p class="muted small">${t('Starting score from what you know. As payments come in, the app moves to the real payment score (fully after about 8 instalments).')}</p>
+        <label>${t('Note')} <small class="muted">(${t('optional')})</small><input name="pnote" maxlength="120" value="${esc(c?.prior?.note || '')}" placeholder="${t('e.g. Known for 10 years / delayed payments before')}"></label>
+      </div></div>
     ${c ? '' : `<h3>${t('Accounts')}</h3><div id="accs">${accountRowHtml(0)}</div>
       <button type="button" class="btn ghost" id="addAcc">+ ${t('Another account')}</button>
       <p class="muted small">${t('Opening balance: amount still due from the old book. Leave empty for a new customer.')}</p>`}
@@ -938,6 +948,10 @@ function renderCustomerForm(id) {
   };
   bindPhones();
   checkPhones();
+  const pf = $('#cf'), psv = $('#psv');
+  const showPs = () => { const v = Number(pf.ps.value); psv.textContent = v; psv.className = `sc big sc-${bandOf(v)}`; };
+  pf.ps.oninput = showPs; showPs();
+  pf.pk.onchange = () => { $('#priorBox').hidden = !pf.pk.checked; };
   $('#cf').onsubmit = async (e) => {
     e.preventDefault();
     const sb = $('#cf button[type=submit]'); if (sb.disabled) return; sb.disabled = true;
@@ -948,6 +962,10 @@ function renderCustomerForm(id) {
     if (phones.length && !phones.some((p) => p.primary)) phones[0].primary = true;
     const data = { name: f.name.value.trim(), house: f.house.value.trim(), lane: f.lane.value.trim(), phones, phone: phones.find((p) => p.primary)?.number || '',
       address: f.address.value.trim(), days: $$('input[name=day]:checked', f).map((x) => Number(x.value)) };
+    // starting score from what the seller already knows (blended out by real payments, see L.customerScore)
+    const prior = f.pk.checked ? { score: Number(f.ps.value), note: f.pnote.value.trim(), by: S.user.uid, at: today() } : null;
+    const priorChanged = JSON.stringify(c?.prior ? { s: c.prior.score, n: c.prior.note || '' } : null) !== JSON.stringify(prior ? { s: prior.score, n: prior.note } : null);
+    if (!c || priorChanged) data.prior = prior;
     const hashes = await hashesOf(phones);
     data.phoneHashes = hashes;
     if (c) {
@@ -955,8 +973,9 @@ function renderCustomerForm(id) {
       const upd = { ...data };
       if (c.address && c.address !== data.address) upd.addressHistory = [...(c.addressHistory || []), { address: c.address, until: today() }];
       b.update(F.sellerDoc(sid, 'customers', id), upd);
-      F.audit(b, S.user.uid, 'customer', `sellers/${sid}/customers/${id}`, { name: c.name, house: c.house || '', lane: c.lane || '', phones: phonesOf(c), address: c.address, days: daysOf(c) }, data);
+      F.audit(b, S.user.uid, 'customer', `sellers/${sid}/customers/${id}`, { name: c.name, house: c.house || '', lane: c.lane || '', phones: phonesOf(c), address: c.address, days: daysOf(c), ...(priorChanged ? { prior: c.prior || null } : {}) }, data);
       F.commit(b, onWriteError);
+      if (priorChanged) { c.prior = data.prior; rescoreSoon(id); }
       toast(t('Saved'));
       return go(`#/customer/${id}`);
     }
@@ -965,8 +984,9 @@ function renderCustomerForm(id) {
     const pendNow = pend ? readPending() : null;
     if (pendNow && !$$('.acc-row').length) { sb.disabled = false; return toast(t('Add an account for the cash sale balance'), true); }
     const mc = pendNow ? { modeCounts: { cash: pendNow.pays.filter((p) => p.mode === 'cash').length, upi: pendNow.pays.filter((p) => p.mode === 'upi').length } } : {};
-    b.set(F.doc(ccol, cid), { ...data, ...mc, addressHistory: [], createdAt: Date.now() });
-    writeIndex(b, sid, cid, {}, hashes);
+    const startScore = prior ? { score: prior.score, band: bandOf(prior.score), parts: null, plan: null, freq: 'weekly', promises: null, capped: '', prior: { start: prior.score, w: 0, real: null }, at: today() } : null;
+    b.set(F.doc(ccol, cid), { ...data, ...mc, ...(startScore ? { score: startScore } : {}), addressHistory: [], createdAt: Date.now() });
+    writeIndex(b, sid, cid, startScore ? { score: startScore } : {}, hashes);
     let firstAid = null;
     $$('.acc-row').forEach((row, i) => {
       const acol = F.sellerCol(sid, 'accounts'), aid = F.newId(acol);
@@ -998,12 +1018,14 @@ const reasonLabel = (r) => t((VISIT_REASONS.find((x) => x[0] === r) || [, r])[1]
 function scoreCardHtml(c) {
   const sc = c.score, p = sc?.plan, per = { daily: t('day'), weekly: t('week'), monthly: t('month') }[sc?.freq] || t('week');
   const others = othersOf(c);
-  const lines = !sc || sc.score == null ? [t('New customer — score after 4 weeks of history')]
+  const pr = c.prior, pw = sc?.prior?.w ?? 0;
+  const priorLine = pr ? `<div class="priorline">🤝 ${t('Starting score')} <b>${pr.score}</b>${pw >= 1 ? ` · ${t('payments decide now')}` : pw > 0 ? ` · ${Math.round(pw * 100)}% ${t('from payments')}` : ''}${pr.note ? ` · ${esc(pr.note)}` : ''}</div>` : '';
+  const lines = !sc || sc.score == null || !p ? [pr ? t('Payments will decide the score after 4 weeks of history') : t('New customer — score after 4 weeks of history')]
     : [`<b>${t('Plan')}: ${rmoney(p.perPeriod)} / ${per}</b>`,
       `${t('Should have paid')} ${rmoney(p.expected)} · ${t('Paid')} ${rmoney(p.paid)}`,
       p.behind > 0 ? `<b style="color:var(--bad)">${rmoney(p.behind)} ${t('behind')} (${p.behindPeriods} ${per})</b>` : `<b style="color:var(--wa)">${t('Not behind')}</b>`,
       `${t('Their average')}: ${rmoney(p.average)} / ${per}`];
-  return `<div class="scorecard">${scoreBadges(c, true)}<div class="txt">${lines.join('<br>')}
+  return `<div class="scorecard">${scoreBadges(c, true)}<div class="txt">${lines.join('<br>')}${priorLine}
     ${others.map((o) => `<div style="margin-top:4px">👥 ${t('Also a customer of')} <b>${esc(o.name)}</b>${o.score != null ? ` · ${o.score}` : ''}${o.ban ? ` · 🚫 ${esc(o.ban)}` : ''} <a class="btn small wa" data-wa-seller="${o.key}" target="_blank" rel="noopener" hidden>💬</a></div>`).join('')}</div></div>`;
 }
 
@@ -1522,7 +1544,8 @@ function renderSale(cid, aid) {
   try { const o = JSON.parse(sessionStorage.getItem('saleOrder') || 'null'); if (o && o.customerId === cid) order = o; } catch {}
   const rows = order ? order.items.map((i) => ({ name: i.name, qty: Number(i.qty) || 1, price: Number(lastPrice(i.name)) || 0 })) : [];
   const [perN, perW] = PER[a.frequency] || PER.weekly;
-  view.innerHTML = `
+  const warns = riskWarnings(c);
+  view.innerHTML = `${warns.length ? `<div class="banner warn"><b>⚠ ${t('Check before giving')}</b>${warns.map((w) => `<div class="small">${w}</div>`).join('')}</div>` : ''}
     ${order ? `<div class="banner"><b>🚚 ${t('Delivering order')}</b><span class="small">${esc(order.items.map((i) => `${i.name} × ${i.qty}`).join(', '))}</span></div>` : ''}
     <div class="card form"><small class="muted">${esc(a.name)} · ${t('Balance')} ${money(a.balance)}</small>
       <div id="lines"></div>
@@ -2850,6 +2873,16 @@ const orderText = (o) => o.items.map((i) => `${i.name} × ${i.qty}`).join(', ');
 const orderLineHtml = (i = {}) => `<div class="orderline"><input name="on" list="snames" placeholder="${t('Item')}" value="${esc(i.name || '')}">
   <input name="oq" type="number" min="1" inputmode="numeric" value="${i.qty || 1}"><button type="button" class="x" data-orm>×</button></div>`;
 
+/** Warnings (never blocks) before giving goods to a customer: low score, flags, other sellers, a low starting score note. */
+function riskWarnings(c) {
+  const warns = [];
+  if (c.score?.band === 'risk') warns.push(`${t('Score')} ${c.score.score} — ${c.score.prior && c.score.prior.real == null ? t('starting score set by the seller') : t('this customer is behind on payments')}`);
+  if (c.prior && c.prior.score < 60 && c.prior.note && (c.score?.prior?.w ?? 0) < 1) warns.push(`🤝 ${esc(c.prior.note)}`);
+  if (c.ban) warns.push(`🚫 ${esc(c.ban.byName || '')}: ${esc(c.ban.reason)}`);
+  othersOf(c).forEach((x) => { if (x.ban) warns.push(`🚫 ${esc(x.name)}: ${esc(x.ban)}`); else if (x.score != null && x.score < 60) warns.push(`${esc(x.name)} — ${t('Score')} ${x.score}`); });
+  return warns;
+}
+
 async function renderOrderForm(cid, oid) {
   if (needSeller()) return;
   const sid = S.sid;
@@ -2860,10 +2893,7 @@ async function renderOrderForm(cid, oid) {
   setTitle(`${o ? t('Order') : t('New order')} · ${c.name}`, true);
   const def = o?.deliveryDate || L.nextRouteDate(daysOf(c), today());
   // Warn (never block) before taking an order from a risky or flagged customer.
-  const oth = othersOf(c), warns = [];
-  if (c.score?.band === 'risk') warns.push(`${t('Score')} ${c.score.score} — ${t('this customer is behind on payments')}`);
-  if (c.ban) warns.push(`🚫 ${esc(c.ban.byName || '')}: ${esc(c.ban.reason)}`);
-  oth.forEach((x) => { if (x.ban) warns.push(`🚫 ${esc(x.name)}: ${esc(x.ban)}`); else if (x.score != null && x.score < 60) warns.push(`${esc(x.name)} — ${t('Score')} ${x.score}`); });
+  const warns = riskWarnings(c);
   view.innerHTML = `${warns.length ? `<div class="banner warn"><b>⚠ ${t('Check before delivering')}</b>${warns.map((w) => `<div class="small">${w}</div>`).join('')}</div>` : ''}
     <div class="row" style="padding:4px 2px">${scoreBadges(c)}</div>
     <form id="of" class="card form">

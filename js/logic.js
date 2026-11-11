@@ -428,7 +428,21 @@ export function weekStart(d, startDay = 6) {
 export const SCORE_TOL = { daily: [3, 30], weekly: [7, 42], monthly: [30, 120] }; // [free days, zero-mark days]
 export const SCORE_CAP = { daily: [7, 15], weekly: [14, 28], monthly: [60, 90] }; // days behind now -> cap at yellow / red
 const PERIOD_DAYS = { daily: 1, weekly: 7, monthly: 30 };
-export function customerScore({ accounts = [], sales = [], collections = [], promises = [], today }) {
+/** Weight of the payment score against a seller's starting score: 0 at the start, 1 after about 8 instalment periods. */
+export const PRIOR_PERIODS = 8;
+export function customerScore(args) {
+  const r = paymentScore(args), prior = args.prior;
+  if (prior == null || !Number.isFinite(Number(prior))) return r;
+  const start = Math.max(0, Math.min(100, Math.round(Number(prior))));
+  const bandOfN = (n) => (n >= 80 ? 'good' : n >= 60 ? 'ok' : 'risk');
+  if (r.score == null) return { ...r, score: start, band: bandOfN(start), prior: { start, w: 0, real: null } };
+  const per = PERIOD_DAYS[r.freq] || 7, w = Math.min(1, (r.age || 0) / per / PRIOR_PERIODS);
+  let score = Math.round(r.score * w + start * (1 - w));
+  // far behind right now still caps the score, whatever the starting score was
+  if (r.capped === 'red' && score > 59) score = 59; else if (r.capped === 'yellow' && score > 79) score = 79;
+  return { ...r, score, band: bandOfN(score), prior: { start, w: round2(w), real: r.score } };
+}
+function paymentScore({ accounts = [], sales = [], collections = [], promises = [], today }) {
   const dayN = (d) => Math.round(Date.parse(d + 'T00:00:00Z') / 864e5);
   const T = dayN(today);
   const paidBy = {}; // key `${accountId}|${ref}` -> [{t, amount}]
@@ -471,7 +485,7 @@ export function customerScore({ accounts = [], sales = [], collections = [], pro
   const freq = Object.entries(weightBy).sort((a, b) => b[1] - a[1])[0][0];
   const [free, zero] = SCORE_TOL[freq] || SCORE_TOL.weekly, per = PERIOD_DAYS[freq] || 7;
   const oldest = Math.min(...items.map((i) => i.start));
-  if (T - oldest < 28) return { score: null, band: 'new', reason: 'less than 4 weeks', freq };
+  if (T - oldest < 28) return { score: null, band: 'new', reason: 'less than 4 weeks', freq, age: T - oldest };
   const open = items.filter((i) => i.open && i.start <= T);
   const behindDays = (t) => {
     let behind = 0, rate = 0;
@@ -524,7 +538,7 @@ export function customerScore({ accounts = [], sales = [], collections = [], pro
   const last90 = collections.filter((c) => c.kind !== 'discount' && c.kind !== 'advance' && dayN(c.date) > T - 90).reduce((s, c) => s + c.amount, 0);
   const histDays = Math.min(90, T - oldest);
   return {
-    score, band: score >= 80 ? 'good' : score >= 60 ? 'ok' : 'risk', parts, freq, capped,
+    score, band: score >= 80 ? 'good' : score >= 60 ? 'ok' : 'risk', parts, freq, capped, age: T - oldest,
     plan: {
       perPeriod: Math.round(rateDay * per), expected: expectedNow, paid: paidNow,
       behind: round2(Math.max(0, expectedNow - paidNow)), behindPeriods: Math.round((nowBehind / per) * 10) / 10,
