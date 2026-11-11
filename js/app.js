@@ -737,16 +737,35 @@ document.addEventListener('click', (e) => {
   bub.style.top = (r.bottom + window.scrollY + 6) + 'px';
 }, true);
 
+/** Customer of today's latest collection or no-payment visit (by time of entry). */
+function lastActivity(cols, vis) {
+  let best = null;
+  for (const x of [...cols.filter((c) => c.customerId && c.kind !== 'discount'), ...vis]) if (!best || (x.createdAt || 0) > (best.createdAt || 0)) best = x;
+  return best?.customerId || '';
+}
+const scrollNearTop = (el) => { if (el) window.scrollTo({ top: Math.max(0, el.getBoundingClientRect().top + window.scrollY - 130) }); };
+/** A short-lived bar at the bottom with an undo button. */
+function undoBar(msg, undo) {
+  $$('.undobar').forEach((x) => x.remove());
+  const bar = document.createElement('div');
+  bar.className = 'undobar';
+  bar.innerHTML = `<span>✓ ${esc(msg)}</span><button type="button" class="btn small">↶ ${t('Undo')}</button>`;
+  document.body.appendChild(bar);
+  const tm = setTimeout(() => bar.remove(), 7000);
+  $('button', bar).onclick = () => { clearTimeout(tm); bar.remove(); undo(); toast(t('Undone')); };
+}
+
 // ---------- customers ----------
 function renderCustomers() {
   setTitle(t('Customers'));
   if (needSeller()) return;
   const sid = S.sid;
   let filter = (() => { try { return sessionStorage.getItem('custDay') || 'all'; } catch { return 'all'; } })();
-  let paidToday = new Set(), visitedToday = new Set();
+  let paidToday = new Set(), visitedToday = new Set(), lastAct = '';
   const loadPaid = async () => {
     const [cols, vis] = await Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', today()))),
       F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', today())))]);
+    lastAct = lastActivity(cols, vis);
     paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
     visitedToday = new Set(vis.map((v) => v.customerId));
     await loadPromises(sid);
@@ -798,6 +817,69 @@ function renderCustomers() {
     const counted = byRoute ? list.filter((c) => !pausedCust(c.id)) : list;
     const seenC = counted.filter((c) => paidToday.has(c.id)).length, nvC = counted.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
     $('#ctotal').textContent = `${list.length - np} ${t('customers')}${np ? ` (+ ⏸ ${np})` : ''} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seenC} ${t('paid today')}${nvC ? ` · ⊘ ${nvC}` : ''}` : ''}`;
+    if (byRoute && !qv && sections.length === 1) bindHoldDrag(dayOfFilter());
+  };
+  // Hold a row for a second, then drag it to a new place in the route; saved at once, with an undo button.
+  let suppressClick = false;
+  const bindHoldDrag = (day) => {
+    const ul = $('#clist');
+    ul.classList.add('holdable');
+    $$('#clist > li > a.row').forEach((a) => {
+      a.oncontextmenu = (e) => e.preventDefault();
+      a.draggable = false; a.ondragstart = (e) => e.preventDefault();
+      a.onpointerdown = (e) => {
+        if (e.button > 0 || arranging) return;
+        const li = a.parentElement, x0 = e.clientX, y0 = e.clientY, pid = e.pointerId, touch = e.pointerType === 'touch';
+        let timer = setTimeout(start, 1000), active = false, scrollTimer = null;
+        const cancelEarly = (ev) => { if (ev.pointerId === pid && Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) stopWait(); };
+        function stopWait() { clearTimeout(timer); timer = null; window.removeEventListener('pointermove', cancelEarly); window.removeEventListener('pointerup', stopWait); window.removeEventListener('pointercancel', stopWait); }
+        window.addEventListener('pointermove', cancelEarly); window.addEventListener('pointerup', stopWait); window.addEventListener('pointercancel', stopWait);
+        // On phones Chrome may cancel pointer events once a finger drags; follow the touch events then.
+        let moveTo = null, finish = null;
+        const noScroll = (ev) => { if (!active) return; ev.preventDefault(); const tch = ev.touches[0]; if (tch && moveTo) moveTo(tch.clientY); };
+        const touchEnd = () => { if (active && finish) finish(); };
+        function start() {
+          stopWait(); active = true; suppressClick = true;
+          try { navigator.vibrate?.(35); } catch {}
+          li.classList.add('dragging'); ul.classList.add('dragmode');
+          const before = $$('#clist > li > a.row').map((x) => x.dataset.cid);
+          const move = (ev) => { if (ev.pointerId !== pid) return; ev.preventDefault(); moveTo(ev.clientY); };
+          moveTo = (y) => {
+            clearInterval(scrollTimer);
+            if (y < 90) scrollTimer = setInterval(() => window.scrollBy(0, -12), 16); else if (y > window.innerHeight - 140) scrollTimer = setInterval(() => window.scrollBy(0, 12), 16);
+            const others = $$('#clist > li').filter((x) => x !== li && x.querySelector('a.row'));
+            const nxt = others.find((x) => { const r = x.getBoundingClientRect(); return y < r.top + r.height / 2; });
+            if (nxt) { if (li.nextElementSibling !== nxt) ul.insertBefore(li, nxt); } else ul.appendChild(li);
+          };
+          const up = (ev) => { if (ev.pointerId !== pid || (ev.type === 'pointercancel' && touch)) return; finish(); };
+          finish = () => {
+            if (!active) return;
+            clearInterval(scrollTimer); active = false; li.classList.remove('dragging'); ul.classList.remove('dragmode');
+            window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+            window.removeEventListener('touchmove', noScroll); window.removeEventListener('touchend', touchEnd); window.removeEventListener('touchcancel', touchEnd);
+            setTimeout(() => { suppressClick = false; }, 400);
+            const after = $$('#clist > li > a.row').map((x) => x.dataset.cid);
+            if (after.join() === before.join()) return draw();
+            saveRouteOrder(day, after, before);
+          };
+          window.addEventListener('pointermove', move, { passive: false }); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+          window.addEventListener('touchmove', noScroll, { passive: false }); window.addEventListener('touchend', touchEnd); window.addEventListener('touchcancel', touchEnd);
+        }
+      };
+    });
+  };
+  const saveRouteOrder = (day, order, prev) => {
+    const old = Object.fromEntries(order.map((id) => [id, S.customers[id]?.routeOrder?.[day]]));
+    const write = (ids, val) => {
+      const b = F.writeBatch(F.db);
+      ids.forEach((id, i) => { const v = val(id, i); b.update(F.sellerDoc(sid, 'customers', id), { [`routeOrder.${day}`]: v == null ? F.deleteField() : v });
+        const c = S.customers[id]; if (c) { c.routeOrder = { ...(c.routeOrder || {}) }; if (v == null) delete c.routeOrder[day]; else c.routeOrder[day] = v; } });
+      return b;
+    };
+    const b = write(order, (id, i) => i + 1);
+    F.audit(b, S.user.uid, 'route-order', `sellers/${sid}/day/${day}`, { day, order: prev }, { day, order });
+    F.commit(b, onWriteError); draw();
+    undoBar(t('Route order saved'), () => { const b2 = write(order, (id) => old[id]); F.audit(b2, S.user.uid, 'route-order-undo', `sellers/${sid}/day/${day}`, { day, order }, { day, order: prev }); F.commit(b2, onWriteError); draw(); });
   };
   view.innerHTML = sellerBar() + receiptBar(true) + `
     <div class="fchips" id="dayf"></div>
@@ -809,6 +891,7 @@ function renderCustomers() {
   bindSellerBar();
   bindReceiptBar();
   $('#q').oninput = draw;
+  $('#clist').addEventListener('click', (e) => { if (suppressClick) { e.preventDefault(); e.stopPropagation(); } }, true);
 
   const startArrange = (ids, note) => {
     arranging = ids;
@@ -871,7 +954,9 @@ function renderCustomers() {
     // Coming back after a collection: bring that customer into view so the next house is right below.
     let last = null; try { last = sessionStorage.getItem('lastCust'); sessionStorage.removeItem('lastCust'); } catch {}
     const el = last && $(`#clist [data-cid="${last}"]`);
-    if (el) el.scrollIntoView({ block: 'center' });
+    if (el) return el.scrollIntoView({ block: 'center' });
+    // Otherwise open the route list at today's last ✓ / ⊘ so the next houses are right below it.
+    if (filter !== 'all' && filter !== 'none' && lastAct) scrollNearTop($(`#clist [data-cid="${lastAct}"]`));
   });
   S.refresh = draw;
 }
@@ -1279,7 +1364,7 @@ function renderPick(action) {
   setTitle(action === 'sale' ? t('New sale') : action === 'order' ? t('New order') : t('Collection'), action === 'order' ? '#/orders' : '#/home');
   if (needSeller()) return;
   try { sessionStorage.setItem('afterNewCustomer', action === 'order' ? 'order' : ''); } catch {}
-  let paidToday = new Set(), visitedToday = new Set();
+  let paidToday = new Set(), visitedToday = new Set(), lastAct = '';
   const draw = () => {
     const qv = ($('#q')?.value || '').toLowerCase();
     // No search: today's route first in the same order as Customers → Today (arranged order, then lane / house no.),
@@ -1301,9 +1386,9 @@ function renderPick(action) {
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
         const seq = sec.route ? ++n : 0, dm = sec.route ? dueMark(c.id, paidToday.has(c.id)) : '', paid = (paidToday.has(c.id) ? 'paid' : '') + (dm ? ' notdue' : '');
-        if (action === 'order') return `<li><a class="row ${paid}" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${name(c, seq, dm)}<small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`;
+        if (action === 'order') return `<li><a class="row ${paid}" data-cid="${c.id}" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${name(c, seq, dm)}<small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`;
         return accountsOf(c.id).filter((a) => a.status !== 'closed').map((a, i) =>
-          `<li><a class="row ${paid}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq, i ? '' : dm)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${shortDate(nextDueOf(a))}` : ''}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
+          `<li><a class="row ${paid}" data-cid="${c.id}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq, i ? '' : dm)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${shortDate(nextDueOf(a))}` : ''}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
       }).join('');
       return rows ? (sec.head ? `<li class="lanehead ${sec.cls}">${esc(sec.head)}</li>` : '') + rows : '';
     }).join('');
@@ -1319,8 +1404,9 @@ function renderPick(action) {
     if (!$('#plist')) return; // left the page already
     paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
     visitedToday = new Set(vis.map((v) => v.customerId));
+    lastAct = lastActivity(cols, vis);
     return loadPromises(sid);
-  }).then(() => { if ($('#plist')) draw(); }).catch(() => {});
+  }).then(() => { if (!$('#plist')) return; draw(); if (lastAct && !($('#q')?.value)) scrollNearTop($(`#plist [data-cid="${lastAct}"]`)); }).catch(() => {});
 }
 
 // ---------- account ledger ----------

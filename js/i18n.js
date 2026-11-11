@@ -1,5 +1,7 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Undo': 'തിരുത്തുക',
+  'Undone': 'പഴയപോലെയാക്കി',
   'on instalments': 'അടവിൽ',
   'on sales': 'വിൽപ്പനയിൽ',
   'Cash discount ₹': 'ക്യാഷ് ഡിസ്കൗണ്ട് ₹',
