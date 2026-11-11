@@ -445,7 +445,9 @@ function routeTile(paid, visited) {
     ? `${dayLabel(plan.change.day)} ${t('route cancelled today')}${plan.change.events ? ` (${esc(plan.change.events)})` : ''}`
     : `${dayLabel(plan.change.day)} ${t('route moved to')} ${fmtDate(plan.change.toDate)}`) : '';
   if (!plan.days.length) return `<div class="routetile off">${changeNote || t('No route today')}</div>`;
-  const groups = todayRouteList(plan), every = groups.flatMap((g) => g.list), all = every.filter((c) => !pausedCust(c.id));
+  const groups = todayRouteList(plan), every = groups.flatMap((g) => g.list),
+    // counted: active customers with something to pay; one who paid or was visited today stays in (paying the last instalment brings the balance to 0)
+    all = every.filter((c) => !pausedCust(c.id) && (openBalance(c.id) > 0 || paid.has(c.id) || visited.has(c.id)));
   const done = all.filter((c) => paid.has(c.id) || visited.has(c.id)).length;
   const due = every.reduce((s, c) => s + openBalance(c.id), 0);
   const label = groups.map((g) => dayLabel(g.day) + (g.moved ? ` (${t('moved')})` : '')).join(' + ');
