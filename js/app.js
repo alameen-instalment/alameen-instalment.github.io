@@ -847,7 +847,8 @@ function renderCustomers() {
         const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), paid = paidToday.has(c.id), nopay = !paid && visitedToday.has(c.id);
         const days = daysOf(c).map(dayLabel).join(' ');
         const dm = byRoute ? dueMark(c.id, paid) : '';
-        return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dm ? 'notdue' : ''}">
+        const dim = dm || (byRoute && !paid && pausedCust(c.id)); // not due yet, or ⏸ inactive: shown faded so nobody goes there by mistake
+        return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dim ? 'notdue' : ''}">
           <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
@@ -1423,10 +1424,11 @@ function renderPick(action) {
     } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
     let n = 0;
     const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : '');
-    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
+    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${pauseMark(c.id)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
-        const seq = sec.route ? ++n : 0, dm = sec.route ? dueMark(c.id, paidToday.has(c.id)) : '', paid = (paidToday.has(c.id) ? 'paid' : '') + (dm ? ' notdue' : '');
+        const seq = sec.route ? ++n : 0, dm = sec.route ? dueMark(c.id, paidToday.has(c.id)) : '', faded = dm || (sec.route && !paidToday.has(c.id) && pausedCust(c.id));
+        const paid = (paidToday.has(c.id) ? 'paid' : '') + (faded ? ' notdue' : '');
         if (action === 'order') return `<li><a class="row ${paid}" data-cid="${c.id}" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${name(c, seq, dm)}<small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`;
         return accountsOf(c.id).filter((a) => a.status !== 'closed').map((a, i) =>
           `<li><a class="row ${paid}" data-cid="${c.id}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq, i ? '' : dm)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${shortDate(nextDueOf(a))}` : ''}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
