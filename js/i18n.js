@@ -1,5 +1,8 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Last paid (old book)': 'അവസാനം അടച്ചത് (പഴയ ബുക്ക്)',
+  'Due': 'അടവ്',
+  'Next due': 'അടുത്ത അടവ്',
   'Needs buying': 'വാങ്ങണം',
   'not in hand, needs buying: the item also shows in To buy.': 'കയ്യിലില്ല, വാങ്ങണം: ഈ ഐറ്റം To buy-ലും കാണും.',
   'Only items marked 🛒 in an order. Customer names are not shown here.': 'ഓർഡറുകളിൽ 🛒 അടയാളപ്പെടുത്തിയ ഐറ്റങ്ങൾ മാത്രം. കസ്റ്റമർമാരുടെ പേര് ഇവിടെ കാണിക്കില്ല.',

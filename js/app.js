@@ -708,6 +708,15 @@ async function maintainBook() {
     writeIndex(b, sid, c.id, c, hashes); b.update(F.sellerDoc(sid, 'customers', c.id), { phoneHashes: hashes }); c.phoneHashes = hashes;
     F.commit(b, () => {});
   }
+  // monthly accounts made before v32 have no lastPaid yet: read the last 62 days of collections once
+  const need = Object.values(S.accounts).filter((a) => (a.frequency || 'weekly') === 'monthly' && a.status !== 'closed' && a.lastPaid === undefined);
+  if (need.length) {
+    const cols = await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '>=', L.addDays(today(), -62)))).catch(() => null);
+    if (cols && S.sid === sid) {
+      const last = {}; cols.forEach((c) => { if (c.kind === 'collection' && (!last[c.accountId] || c.date > last[c.accountId])) last[c.accountId] = c.date; });
+      const b = F.writeBatch(F.db); need.forEach((a) => { b.update(F.sellerDoc(sid, 'accounts', a.id), { lastPaid: last[a.id] || '' }); a.lastPaid = last[a.id] || ''; }); F.commit(b, () => {});
+    }
+  }
   const plan = todayPlan(), stale = all.filter((c) => c.score?.at !== today()).sort((a, b) => onTodayRoute(b, plan) - onTodayRoute(a, plan));
   for (const c of stale.slice(0, 60)) { if (S.sid !== sid) return; try { await rescore(c.id, sid); } catch {} await new Promise((r) => setTimeout(r, 150)); }
   live();
@@ -774,8 +783,9 @@ function renderCustomers() {
         lastLane = lane.toLowerCase();
         const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), paid = paidToday.has(c.id), nopay = !paid && visitedToday.has(c.id);
         const days = daysOf(c).map(dayLabel).join(' ');
-        return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''}">
-          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+        const dm = byRoute ? dueMark(c.id, paid) : '';
+        return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dm ? 'notdue' : ''}">
+          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
@@ -869,12 +879,49 @@ function accountRowHtml(i, a = {}) {
     <div class="two">
       <label>${t('Instalment')}<select name="af">${FREQ.map((f) => `<option value="${f}" ${f === (a.frequency || 'weekly') ? 'selected' : ''}>${freqLabel(f)}</option>`).join('')}</select></label>
       <label>${t('Opening balance')}<input name="ao" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></label>
-    </div></div>`;
+    </div>
+    <label class="lpo" ${(a.frequency || 'weekly') === 'monthly' ? '' : 'hidden'}>${t('Last paid (old book)')} <small class="muted">(${t('optional')})</small><input name="alp" type="date" max="${today()}"></label></div>`;
+}
+/** Show the "last paid" date only for monthly accounts (account rows in a form). */
+function bindAccountRows(root = document) {
+  $$('.acc-row', root).forEach((row) => { const sel = $('[name=af]', row), box = $('.lpo', row); if (sel && box) sel.onchange = () => { box.hidden = sel.value !== 'monthly'; }; });
+}
+const accRowLastPaid = (row) => ($('[name=af]', row).value === 'monthly' ? $('[name=alp]', row)?.value || '' : '');
+
+function newAccountDoc(cid, name, frequency, opening, lastPaidOld = '') {
+  const queue = opening > 0 ? [{ ref: 'opening', date: '0000-00-00', seq: 0, remaining: opening, ratio: L.legacyRatio(S.settings.legacyMarginPct) }] : [];
+  return { customerId: cid, name, frequency, openingBalance: opening, balance: opening, status: 'open', queue, date: today(), createdAt: Date.now(), lastPaid: '', ...(lastPaidOld ? { lastPaidOld } : {}) };
 }
 
-function newAccountDoc(cid, name, frequency, opening) {
-  const queue = opening > 0 ? [{ ref: 'opening', date: '0000-00-00', seq: 0, remaining: opening, ratio: L.legacyRatio(S.settings.legacyMarginPct) }] : [];
-  return { customerId: cid, name, frequency, openingBalance: opening, balance: opening, status: 'open', queue, date: today(), createdAt: Date.now() };
+// ---------- monthly accounts: next instalment date ----------
+// Base = the later of the last collection in the app (account.lastPaid) and the old book's last payment (lastPaidOld).
+const addMonth = (d) => {
+  const [y, m, dd] = d.split('-').map(Number), ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+  const last = new Date(Date.UTC(ny, nm, 0)).getUTCDate();
+  return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(dd, last)).padStart(2, '0')}`;
+};
+function nextDueOf(a) {
+  if ((a.frequency || 'weekly') !== 'monthly' || a.status === 'closed' || !(a.balance > 0)) return '';
+  const base = [a.lastPaid || '', a.lastPaidOld || ''].sort().pop();
+  return base ? addMonth(base) : '';
+}
+/** Earliest next due date when every open account of the customer is monthly and not due yet; '' otherwise. */
+function notDueUntil(cid) {
+  const accs = accountsOf(cid).filter((a) => a.status !== 'closed' && a.balance > 0 && !a.inactive);
+  if (!accs.length) return '';
+  let min = '';
+  for (const a of accs) { const d = nextDueOf(a); if (!d || d <= today()) return ''; if (!min || d < min) min = d; }
+  return min;
+}
+const dueMark = (cid, paid) => { const d = paid ? '' : notDueUntil(cid); return d ? `<span class="pill duep">${t('Due')} ${shortDate(d)}</span>` : ''; };
+/** After a collection is removed or moved, find the account's real last collection date again. */
+async function refreshLastPaid(sid, aid) {
+  const cols = await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('accountId', '==', aid))).catch(() => null);
+  if (!cols) return;
+  const last = cols.filter((c) => c.kind === 'collection').map((c) => c.date).sort().pop() || '';
+  const a = S.accounts[aid]; if (a && (a.lastPaid || '') === last) return;
+  const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), { lastPaid: last }); F.commit(b, () => {});
+  if (a) a.lastPaid = last;
 }
 
 function renderCustomerForm(id) {
@@ -912,7 +959,8 @@ function renderCustomerForm(id) {
       <p class="muted small">${t('Opening balance: amount still due from the old book. Leave empty for a new customer.')}</p>`}
     <button class="btn primary" type="submit">${t('Save')}</button></form>`;
   let n = 1, pn = $$('.phonerow').length;
-  if (!c) $('#addAcc').onclick = () => $('#accs').insertAdjacentHTML('beforeend', accountRowHtml(n++));
+  if (!c) $('#addAcc').onclick = () => { $('#accs').insertAdjacentHTML('beforeend', accountRowHtml(n++)); bindAccountRows(); };
+  bindAccountRows();
   // Number already a customer of another seller? Warn (never block) so the seller can ask them first.
   let cashSalesCache = null;
   if (pend) {
@@ -1006,7 +1054,7 @@ function renderCustomerForm(id) {
     let firstAid = null;
     $$('.acc-row').forEach((row, i) => {
       const acol = F.sellerCol(sid, 'accounts'), aid = F.newId(acol);
-      let doc = newAccountDoc(cid, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value));
+      let doc = newAccountDoc(cid, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value), accRowLastPaid(row));
       if (i === 0 && pendNow) doc = applyPendingSale(b, sid, cid, aid, doc, pendNow, data.name);
       if (i === 0) firstAid = aid;
       b.set(F.doc(acol, aid), doc);
@@ -1164,10 +1212,11 @@ async function renderCustomer(cid) {
       if (pd) { const ncol = F.sellerCol(sid, 'notes'); b.set(F.doc(ncol, F.newId(ncol)), { customerId: cid, customerName: c.name, kind: 'promise', text: t('Promised to pay') + (vf.note.value.trim() ? ' · ' + vf.note.value.trim() : ''), dueDate: pd, done: false, date: today(), createdAt: now }); }
       F.commit(b, onWriteError); toast(t('Visit saved')); rescoreSoon(cid); draw();
     };
+    bindAccountRows($('#af'));
     $('#af').onsubmit = (e) => {
       e.preventDefault();
       const row = e.target, acol = F.sellerCol(sid, 'accounts'), b = F.writeBatch(F.db);
-      b.set(F.doc(acol, F.newId(acol)), newAccountDoc(cid, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value)));
+      b.set(F.doc(acol, F.newId(acol)), newAccountDoc(cid, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value), accRowLastPaid(row)));
       F.commit(b, onWriteError); toast(t('Saved'));
     };
     $('#nf').onsubmit = (e) => {
@@ -1202,13 +1251,13 @@ function renderPick(action) {
     } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
     let n = 0;
     const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : '');
-    const name = (c, seq) => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${esc(c.name)}</b>`;
+    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${esc(c.name)}</b>${dm}`;
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
-        const seq = sec.route ? ++n : 0, paid = paidToday.has(c.id) ? 'paid' : '';
-        if (action === 'order') return `<li><a class="row ${paid}" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${name(c, seq)}<small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`;
+        const seq = sec.route ? ++n : 0, dm = sec.route ? dueMark(c.id, paidToday.has(c.id)) : '', paid = (paidToday.has(c.id) ? 'paid' : '') + (dm ? ' notdue' : '');
+        if (action === 'order') return `<li><a class="row ${paid}" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${name(c, seq, dm)}<small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`;
         return accountsOf(c.id).filter((a) => a.status !== 'closed').map((a, i) =>
-          `<li><a class="row ${paid}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
+          `<li><a class="row ${paid}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq, i ? '' : dm)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${shortDate(nextDueOf(a))}` : ''}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
       }).join('');
       return rows ? (sec.head ? `<li class="lanehead ${sec.cls}">${esc(sec.head)}</li>` : '') + rows : '';
     }).join('');
@@ -1363,7 +1412,7 @@ async function renderAccount(cid, aid) {
         <div class="contact">${rc.phone ? `<a class="btn wa" id="rcSend" href="https://wa.me/${L.waNumber(rc.phone)}?text=${encodeURIComponent(rc.text)}" target="_blank" rel="noopener">📩 ${t('Send receipt')}</a>` : `<span class="small muted">${t('No phone number saved')}</span>`}
         <button class="btn small" id="rcX">${t('Close')}</button></div></div>` : ''}
       <div class="card balance"><span>${t('Balance due')}</span><b>${money(a.balance)}</b>
-        <small>${freqLabel(a.frequency)}${a.status === 'closed' ? ' · ' + t('Closed') : a.inactive ? ' · ⏸ ' + t('Inactive') + (a.inactiveSince ? ' ' + t('since') + ' ' + fmtDate(a.inactiveSince) : '') : ''}</small>
+        <small>${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${fmtDate(nextDueOf(a))}` : ''}${a.status === 'closed' ? ' · ' + t('Closed') : a.inactive ? ' · ⏸ ' + t('Inactive') + (a.inactiveSince ? ' ' + t('since') + ' ' + fmtDate(a.inactiveSince) : '') : ''}</small>
         <button class="linkbtn obal" id="obal">${Number(a.openingBalance) > 0 ? `${t('Opening balance')}: ${money(a.openingBalance)} ✏️` : `+ ${t('Opening balance')}`}</button></div>
       <div class="grid2 acctiles">
         <a class="tile primary" href="#/collect/${cid}/${aid}">${t('Collection')}</a>
@@ -1386,6 +1435,7 @@ async function renderAccount(cid, aid) {
       <form id="aef" class="card form edbox" hidden>
         <label>${t('Account name')}<input name="an" value="${esc(a.name)}" required maxlength="40"></label>
         <label>${t('Instalment')}<select name="af">${FREQ.map((f) => `<option value="${f}" ${f === (a.frequency || 'weekly') ? 'selected' : ''}>${freqLabel(f)}</option>`).join('')}</select></label>
+        <label class="lpo" ${(a.frequency || 'weekly') === 'monthly' ? '' : 'hidden'}>${t('Last paid (old book)')} <small class="muted">(${t('optional')})</small><input name="alp" type="date" max="${today()}" value="${a.lastPaidOld || ''}"></label>
         <div class="contact"><button class="btn primary" type="submit">${t('Save')}</button><button class="btn" type="button" id="aefX">${t('Cancel')}</button></div></form>
       <div class="actions"><button class="btn" id="accEd">✏️ ${t('Edit account')}</button>${a.status !== 'closed' ? (a.inactive
         ? `<button class="btn" id="actTgl">▶ ${t('Make active')}</button>`
@@ -1410,16 +1460,18 @@ async function renderAccount(cid, aid) {
     const aef = $('#aef');
     $('#accEd').onclick = () => { aef.hidden = !aef.hidden; if (!aef.hidden) { aef.scrollIntoView({ block: 'center' }); aef.an.focus(); } };
     $('#aefX').onclick = () => { aef.hidden = true; };
+    aef.af.onchange = () => { $('.lpo', aef).hidden = aef.af.value !== 'monthly'; };
     aef.onsubmit = (e) => {
       e.preventDefault();
-      const name = aef.an.value.trim(), frequency = aef.af.value;
+      const name = aef.an.value.trim(), frequency = aef.af.value, lpo = frequency === 'monthly' ? aef.alp.value : (a.lastPaidOld || '');
       if (!name) return toast(t('Enter the account name'), true);
       const patch = {};
+      if (lpo !== (a.lastPaidOld || '')) patch.lastPaidOld = lpo;
       if (name !== a.name) patch.name = name;
       if (frequency !== (a.frequency || 'weekly')) patch.frequency = frequency;
       if (!Object.keys(patch).length) { aef.hidden = true; return; }
       const b = F.writeBatch(F.db); b.update(F.sellerDoc(sid, 'accounts', aid), patch);
-      F.audit(b, S.user.uid, 'account-edit', `sellers/${sid}/accounts/${aid}`, { name: a.name, frequency: a.frequency || 'weekly' }, patch);
+      F.audit(b, S.user.uid, 'account-edit', `sellers/${sid}/accounts/${aid}`, { name: a.name, frequency: a.frequency || 'weekly', lastPaidOld: a.lastPaidOld || '' }, patch);
       F.commit(b, onWriteError); Object.assign(a, patch);
       if (patch.frequency) rescoreSoon(cid); // the score's allowed delay depends on daily / weekly / monthly
       toast(t('Saved')); draw();
@@ -1695,7 +1747,7 @@ function renderCollect(cid, aid) {
     else if (mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', id));
     const bal = L.round2(a.balance - amt - disc);
     const closeIt = a.inactive && bal === 0 && confirm(t('This inactive account is now fully paid. Close the account?'));
-    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-L.round2(amt + disc)), ...(closeIt ? { status: 'closed', closedOn: today(), ...setActive(a, true) } : {}) });
+    b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-L.round2(amt + disc)), ...(amt > 0 && date > (a.lastPaid || '') ? { lastPaid: date } : {}), ...(closeIt ? { status: 'closed', closedOn: today(), ...setActive(a, true) } : {}) });
     F.commit(b, onWriteError);
     rescoreSoon(cid);
     const text = [`*${APP_NAME}*`, `${c.name} — ${a.name}`,
@@ -2139,7 +2191,7 @@ function outstandingOf(snap, recent, seller = '') {
     r.byFreq[a.frequency || 'weekly'] = (r.byFreq[a.frequency || 'weekly'] || 0) + a.balance;
     r.byBand[bandOf(c.score?.score)] += a.balance;
     if (a.inactive) { r.paused += a.balance; r.pausedN++; continue; }
-    const lp = last[a.id] || '', ref = lp || (a.date && a.date >= cutoff ? a.date : '');
+    const lp = [last[a.id] || '', a.lastPaidOld || ''].sort().pop(), ref = lp || (a.date && a.date >= cutoff ? a.date : '');
     r.rows.push({ c, a, lp, days: ref ? daysBetween(ref, today()) : 91, seller });
   }
   return r;
@@ -2981,10 +3033,11 @@ async function renderDeliver(oid) {
   view.innerHTML = `<div class="card"><b>🚚 ${esc(orderText(o))}</b><small>${t('Which account should this sale go into?')}</small></div>
     <ul class="list">${open.map((a) => `<li><a class="row" href="#/sale/${c.id}/${a.id}"><div><b>${esc(a.name)}</b><small>${freqLabel(a.frequency)}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('')}</ul>
     <form id="naf" class="card form">${accountRowHtml(1, { name: o.items[0]?.name || '' })}<button class="btn primary" type="submit">${t('New account and sale')}</button></form>`;
+  bindAccountRows($('#naf'));
   $('#naf').onsubmit = (e) => {
     e.preventDefault();
     const row = e.target, acol = F.sellerCol(sid, 'accounts'), aid = F.newId(acol), b = F.writeBatch(F.db);
-    const doc = newAccountDoc(c.id, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value));
+    const doc = newAccountDoc(c.id, $('[name=an]', row).value.trim() || 'Account', $('[name=af]', row).value, num($('[name=ao]', row).value), accRowLastPaid(row));
     b.set(F.doc(acol, aid), doc); F.commit(b, onWriteError);
     S.accounts[aid] = { id: aid, ...doc };
     go(`#/sale/${c.id}/${aid}`);
@@ -3090,6 +3143,7 @@ const KIND_LABEL = { collection: 'Collection', advance: 'Advance', cash: 'Cash s
 /** Remove a collection or discount from its account (balance and open items put back). */
 function removeCollection(b, sid, col) {
   b.delete(F.sellerDoc(sid, 'collections', col.id));
+  if (col.kind === 'collection' && col.accountId) setTimeout(() => refreshLastPaid(sid, col.accountId), 600);
   if (col.mode === 'scrap') b.delete(F.doc(F.db, 'scrapIn', col.id));
   else if (col.kind !== 'discount' && col.customerId) b.update(F.sellerDoc(sid, 'customers', col.customerId), { [`modeCounts.${col.mode === 'upi' ? 'upi' : 'cash'}`]: F.increment(-1) });
   const a = S.accounts[col.accountId];
@@ -3131,6 +3185,7 @@ function editCollection(sid, col, patch) {
   b.update(F.sellerDoc(sid, 'collections', col.id), upd);
   F.audit(b, S.user.uid, 'collection-edit', `sellers/${sid}/collections/${col.id}`, { amount: col.amount, mode: col.mode, upiTo: col.upiTo || '', date: col.date, note: col.note || '' }, { ...upd, ...(upd.upiTo !== undefined && typeof upd.upiTo !== 'string' ? { upiTo: '' } : {}) });
   F.commit(b, onWriteError);
+  if (upd.date && col.accountId) setTimeout(() => refreshLastPaid(sid, col.accountId), 600);
   return 'saved';
 }
 

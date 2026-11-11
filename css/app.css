@@ -470,3 +470,6 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .orderline .obuy input:checked + span { filter: none; opacity: 1; background: var(--warn-soft); border-color: #D49B00; }
 .choice input[type=number] { font-size: 20px; text-align: center; }
 .buyrow .btn { width: auto; flex: none; }
+/* v32: monthly accounts not due yet */
+.row.notdue { opacity: .55; }
+.pill.duep { margin-left: 6px; background: var(--line); color: var(--muted); font-size: 11px; vertical-align: middle; }
