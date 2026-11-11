@@ -749,6 +749,7 @@ function renderCustomers() {
       F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', today())))]);
     paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
     visitedToday = new Set(vis.map((v) => v.customerId));
+    await loadPromises(sid);
     draw();
   };
   let arranging = null; // array of customer ids while arranging the route order
@@ -757,9 +758,10 @@ function renderCustomers() {
   const draw = () => {
     if (arranging) return;
     const all = Object.values(S.customers);
-    const plan = todayPlan(), isRoute = plan.days.length > 0;
+    const plan = todayPlan(), promT = promisedOffRoute(new Set(all.filter((c) => onTodayRoute(c, plan)).map((c) => c.id)));
+    const isRoute = plan.days.length > 0 || promT.length > 0; // a day with promises shows "Today" even without a route
     if (filter === 'today' && !isRoute) filter = 'all';
-    const chips = [['all', t('All'), all.length], ...(isRoute ? [['today', t('Today'), all.filter((c) => matches(c, 'today')).length]] : []),
+    const chips = [['all', t('All'), all.length], ...(isRoute ? [['today', t('Today'), all.filter((c) => matches(c, 'today')).length + promT.length]] : []),
       ...ROUTE_DAYS.map((d) => [String(d), dayLabel(d), all.filter((c) => matches(c, String(d))).length]), ['none', t('No day'), all.filter((c) => matches(c, 'none')).length]];
     $('#dayf').innerHTML = chips.map(([k, l, n]) => `<button class="fchip ${k === filter ? 'on' : ''}" data-f="${k}">${l} <small>${n}</small></button>`).join('');
     $$('[data-f]').forEach((btn) => (btn.onclick = () => { filter = btn.dataset.f; try { sessionStorage.setItem('custDay', filter); } catch {} draw(); }));
@@ -770,14 +772,15 @@ function renderCustomers() {
     // Sections: one per route day (today can also carry a route moved here because of a holiday).
     const ids = new Set(list.map((c) => c.id));
     const sections = filter === 'today'
-      ? todayRouteList(plan).map((g) => ({ head: g.moved ? `${dayLabel(g.day)} ${t('route (moved)')}` : '', list: g.list.filter((c) => ids.has(c.id)) }))
+      ? todayRouteList(plan).map((g) => ({ head: g.moved ? `↩ ${dayLabel(g.day)} ${t('route (moved)')}` : '', list: g.list.filter((c) => ids.has(c.id)) }))
       : [{ head: '', list: byRoute ? L.routeSort(list, dayOfFilter()) : list.sort((a, b) => a.name.localeCompare(b.name)) }];
+    if (filter === 'today' && !qv && promT.length) sections.unshift({ head: `📅 ${t('Promised to pay today')}`, list: promT });
     $('#arrBar').hidden = !byRoute || !!qv || sections.length > 1;
     let n = 0;
     const note = filter === 'today' && plan.change ? `<li class="banner warn">${plan.change.action === 'cancel' ? `${dayLabel(plan.change.day)} ${t('route cancelled today')}` : `${dayLabel(plan.change.day)} ${t('route moved to')} ${fmtDate(plan.change.toDate)}`}</li>` : '';
     $('#clist').innerHTML = note + sections.map((sec) => {
       let lastLane = null;
-      return (sec.head ? `<li class="lanehead moved">↩ ${esc(sec.head)}</li>` : '') + sec.list.map((c) => {
+      return (sec.head ? `<li class="lanehead moved">${esc(sec.head)}</li>` : '') + sec.list.map((c) => {
         n++;
         const lane = (c.lane || '').trim(), head = byRoute && lane.toLowerCase() !== lastLane ? `<li class="lanehead">${esc(lane || t('No lane'))}</li>` : '';
         lastLane = lane.toLowerCase();
@@ -785,7 +788,7 @@ function renderCustomers() {
         const days = daysOf(c).map(dayLabel).join(' ');
         const dm = byRoute ? dueMark(c.id, paid) : '';
         return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dm ? 'notdue' : ''}">
-          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
@@ -1079,6 +1082,35 @@ const noteShareText = (c, n) => [`*${APP_NAME} — ${t('Customer note')}*`, `${c
 const VISIT_REASONS = [['away', 'Not at home'], ['nomoney', 'No money'], ['promise', 'Promised date']];
 const reasonLabel = (r) => t((VISIT_REASONS.find((x) => x[0] === r) || [, r])[1]);
 
+// ---------- promised dates ("will pay on …") ----------
+// The latest visit with a promised date counts, until the customer pays after it (or gives a new date).
+// S.promises: customerId -> { pd, state: 'soon' | 'today' | 'broken' }
+async function loadPromises(sid) {
+  const since = L.addDays(today(), -60);
+  const vis = await F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('promiseDate', '>=', since))).catch(() => null);
+  if (!vis) return S.promises || {};
+  const latest = {};
+  vis.forEach((v) => { if (!latest[v.customerId] || v.createdAt > latest[v.customerId].createdAt) latest[v.customerId] = v; });
+  const from = Object.values(latest).map((v) => v.date).sort()[0];
+  const cols = from ? await F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '>=', from))).catch(() => []) : [];
+  const out = {}, d0 = today();
+  for (const [cid, v] of Object.entries(latest)) {
+    const paid = cols.some((c) => c.customerId === cid && c.kind !== 'discount' && c.kind !== 'refund' && (c.date > v.date || (c.date === v.date && (c.createdAt || 0) > v.createdAt)));
+    if (paid) continue;
+    out[cid] = { pd: v.promiseDate, state: v.promiseDate > d0 ? 'soon' : v.promiseDate === d0 ? 'today' : 'broken' };
+  }
+  if (S.sid === sid) S.promises = out;
+  return out;
+}
+const promiseMark = (cid) => {
+  const p = S.promises?.[cid]; if (!p) return '';
+  if (p.state === 'today') return `<span class="pill prom">📅 ${t('Promised today')}</span>`;
+  if (p.state === 'broken') return `<span class="pill bad">📅 ${t('Promise broken')} · ${shortDate(p.pd)}</span>`;
+  return `<span class="pill duep">📅 ${shortDate(p.pd)}</span>`;
+};
+/** Customers who promised to pay today but are not on today's route list. */
+const promisedOffRoute = (shownIds) => Object.entries(S.promises || {}).filter(([cid, p]) => p.state === 'today' && S.customers[cid] && !shownIds.has(cid)).map(([cid]) => S.customers[cid]).sort((a, b) => a.name.localeCompare(b.name));
+
 function scoreCardHtml(c) {
   const sc = c.score, p = sc?.plan, per = { daily: t('day'), weekly: t('week'), monthly: t('month') }[sc?.freq] || t('week');
   const others = othersOf(c);
@@ -1126,7 +1158,8 @@ async function renderCustomer(cid) {
         <a class="btn" href="#/order/${cid}">🚚 + ${t('Order')}</a></div>
       <form id="vf" class="card form" hidden>
         <b>${t('Visited – no payment')}</b>
-        <div class="reasons">${VISIT_REASONS.map(([k, l], i) => `<label><input type="radio" name="r" value="${k}" ${i ? '' : 'checked'}><span>${t(l)}</span></label>`).join('')}</div>
+        <div class="reasons">${VISIT_REASONS.filter(([k]) => k !== 'promise').map(([k, l], i) => `<label><input type="radio" name="r" value="${k}" ${i ? '' : 'checked'}><span>${t(l)}</span></label>`).join('')}</div>
+        <label class="chk"><input type="checkbox" name="pk"> 📅 ${t('Promised to pay on a date')}</label>
         <label id="pdl" hidden>${t('Promised to pay on')}<input name="pd" type="date" min="${today()}" value="${nextDay}"></label>
         <label>${t('Note (optional)')}<input name="note"></label>
         <button class="btn primary" type="submit">${t('Save visit')}</button></form>
@@ -1152,7 +1185,8 @@ async function renderCustomer(cid) {
       <ul class="list">${notes.map((n) => `<li class="note ${n.done ? 'done' : ''}"><div class="row" style="padding:0;align-items:flex-start"><div>${n.kind === 'promise' ? '🤝 ' : ''}${esc(n.text)}</div>
         <a class="btn small" title="${t('Share')}" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(noteShareText(c, n))}">📤</a></div>
         <small class="muted">${fmtDate(n.date)}${n.dueDate ? ' · ' + t('Remind') + ' ' + fmtDate(n.dueDate) : ''}${n.done ? ' · ' + t('Done') : ''}</small></li>`).join('')}</ul>
-      ${visits.length ? `<h3>⊘ ${t('Visits without payment')}</h3><ul class="list">${visits.map((v) => `<li class="note"><div>${reasonLabel(v.reason)}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''}${v.note ? ' · ' + esc(v.note) : ''}</div><small class="muted">${fmtDate(v.date)}</small></li>`).join('')}</ul>` : ''}
+      ${visits.length ? `<h3>⊘ ${t('Visits without payment')}</h3><ul class="list">${visits.map((v) => `<li class="note"><div>${reasonLabel(v.reason)}${v.promiseDate ? ' → 📅 ' + fmtDate(v.promiseDate) : ''}${v.note ? ' · ' + esc(v.note) : ''}</div><small class="muted">${fmtDate(v.date)}</small>
+        ${!v.promiseDate && v.date === today() ? `<form class="vpd contact" data-vpd="${v.id}"><input type="date" name="pd" min="${today()}" value="${nextDay}" style="flex:1;margin:0"><button class="btn small" type="submit">📅 ${t('Add promised date')}</button></form>` : ''}</li>`).join('')}</ul>` : ''}
       ${isAdmin() ? `<div class="contact" style="margin-top:18px"><button class="btn small danger" id="delCust">🗑 ${t('Delete customer')}</button></div>` : ''}`;
     const dc = $('#delCust');
     if (dc) dc.onclick = () => deleteCustomer(sid, cid, c, accs);
@@ -1202,16 +1236,25 @@ async function renderCustomer(cid) {
     $('#qSale').onclick = () => quick('sale');
     const vf = $('#vf');
     $('#visitBtn').onclick = () => { vf.hidden = !vf.hidden; };
-    $$('input[name=r]', vf).forEach((r) => (r.onchange = () => { $('#pdl').hidden = vf.r.value !== 'promise'; }));
+    vf.pk.onchange = () => { $('#pdl').hidden = !vf.pk.checked; };
     vf.onsubmit = (e) => {
       e.preventDefault();
-      const reason = vf.r.value, pd = reason === 'promise' ? vf.pd.value : '', now = Date.now(), b = F.writeBatch(F.db);
-      if (reason === 'promise' && !pd) return toast(t('Choose the promised date'), true);
+      const reason = vf.r.value, pd = vf.pk.checked ? vf.pd.value : '', now = Date.now(), b = F.writeBatch(F.db);
+      if (vf.pk.checked && !pd) return toast(t('Choose the promised date'), true);
       const vcol = F.sellerCol(sid, 'visits');
       b.set(F.doc(vcol, F.newId(vcol)), { customerId: cid, date: today(), reason, promiseDate: pd, note: vf.note.value.trim(), createdAt: now, by: S.user.uid });
       if (pd) { const ncol = F.sellerCol(sid, 'notes'); b.set(F.doc(ncol, F.newId(ncol)), { customerId: cid, customerName: c.name, kind: 'promise', text: t('Promised to pay') + (vf.note.value.trim() ? ' · ' + vf.note.value.trim() : ''), dueDate: pd, done: false, date: today(), createdAt: now }); }
       F.commit(b, onWriteError); toast(t('Visit saved')); rescoreSoon(cid); draw();
     };
+    // a promise given later (e.g. on the phone) for today's visit
+    $$('[data-vpd]').forEach((fm) => (fm.onsubmit = (e) => {
+      e.preventDefault();
+      const v = visitsR.find((x) => x.id === fm.dataset.vpd), pd = fm.pd.value; if (!v || !pd) return;
+      const b = F.writeBatch(F.db), now = Date.now(), ncol = F.sellerCol(sid, 'notes');
+      b.update(F.sellerDoc(sid, 'visits', v.id), { promiseDate: pd, createdAt: now });
+      b.set(F.doc(ncol, F.newId(ncol)), { customerId: cid, customerName: c.name, kind: 'promise', text: t('Promised to pay') + (v.note ? ' · ' + v.note : ''), dueDate: pd, done: false, date: today(), createdAt: now });
+      F.commit(b, onWriteError); toast(t('Saved')); rescoreSoon(cid); draw();
+    }));
     bindAccountRows($('#af'));
     $('#af').onsubmit = (e) => {
       e.preventDefault();
@@ -1243,15 +1286,18 @@ function renderPick(action) {
     // a route moved here for a holiday after it, then everyone else by name. A search shows the hits by name.
     const plan = todayPlan(), all = Object.values(S.customers), byName = (x, y) => x.name.localeCompare(y.name);
     const sections = [];
-    if (!qv && plan.days.length) {
+    const anyPromise = Object.values(S.promises || {}).some((p) => p.state === 'today');
+    if (!qv && (plan.days.length || anyPromise)) {
       const seen = new Set();
+      const pr = promisedOffRoute(new Set(all.filter((c) => onTodayRoute(c, plan)).map((c) => c.id)));
+      if (pr.length) { pr.forEach((c) => seen.add(c.id)); sections.push({ head: `📅 ${t('Promised to pay today')}`, cls: 'moved', route: false, list: pr }); }
       todayRouteList(plan).forEach((g) => { g.list.forEach((c) => seen.add(c.id)); sections.push({ head: g.moved ? `↩ ${dayLabel(g.day)} ${t('route (moved)')}` : '', cls: g.moved ? 'moved' : '', route: true, list: g.list }); });
       const rest = all.filter((c) => !seen.has(c.id)).sort(byName);
       if (rest.length) sections.push({ head: t('Others'), cls: '', route: false, list: rest });
     } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
     let n = 0;
     const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited – no payment')}">⊘</span> ` : '');
-    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${esc(c.name)}</b>${dm}`;
+    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
         const seq = sec.route ? ++n : 0, dm = sec.route ? dueMark(c.id, paidToday.has(c.id)) : '', paid = (paidToday.has(c.id) ? 'paid' : '') + (dm ? ' notdue' : '');
@@ -1273,8 +1319,8 @@ function renderPick(action) {
     if (!$('#plist')) return; // left the page already
     paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
     visitedToday = new Set(vis.map((v) => v.customerId));
-    draw();
-  }).catch(() => {});
+    return loadPromises(sid);
+  }).then(() => { if ($('#plist')) draw(); }).catch(() => {});
 }
 
 // ---------- account ledger ----------

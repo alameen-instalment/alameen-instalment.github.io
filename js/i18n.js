@@ -1,5 +1,10 @@
 // English is the key; Malayalam is looked up, falling back to English.
 const ML = {
+  'Promised today': 'ഇന്ന് തരാമെന്ന് പറഞ്ഞു',
+  'Promise broken': 'വാക്ക് തെറ്റി',
+  'Promised to pay today': 'ഇന്ന് തരാമെന്ന് വാക്ക് തന്നവർ',
+  'Promised to pay on a date': 'ഒരു തീയതിയിൽ തരാമെന്ന് പറഞ്ഞു',
+  'Add promised date': 'വാക്ക് തന്ന തീയതി ചേർക്കുക',
   'Last paid (old book)': 'അവസാനം അടച്ചത് (പഴയ ബുക്ക്)',
   'Due': 'അടവ്',
   'Next due': 'അടുത്ത അടവ്',

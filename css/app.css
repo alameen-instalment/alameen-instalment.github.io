@@ -473,3 +473,10 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 /* v32: monthly accounts not due yet */
 .row.notdue { opacity: .55; }
 .pill.duep { margin-left: 6px; background: var(--line); color: var(--muted); font-size: 11px; vertical-align: middle; }
+/* v33: promised dates */
+.pill.prom { margin-left: 6px; background: #E3F1FB; color: #1565A6; font-size: 11px; vertical-align: middle; }
+.pill.bad { vertical-align: middle; }
+#clist .pill.bad, #plist .pill.bad { margin-left: 6px; font-size: 11px; }
+.vpd { margin-top: 6px; }
+#vf .chk { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; }
+#vf .chk input { width: 20px; height: 20px; margin: 0; }
