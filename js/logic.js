@@ -141,7 +141,7 @@ export function preferredMode(counts) { // scrap is never the default
  * Report figures for one seller over a period.
  * Input arrays are already filtered to the date range.
  */
-export function sellerReport({ sales = [], collections = [], returns = [], expenses = [], writeoffs = [] }) {
+export function sellerReport({ sales = [], collections = [], returns = [], expenses = [], writeoffs = [], scrapBuys = [] }) {
   const salesValue = round2(sales.reduce((s, x) => s + x.saleValue, 0));
   const salesCost = round2(sales.reduce((s, x) => s + x.cost, 0));
   const cashSales = round2(sales.filter((x) => x.cash).reduce((s, x) => s + x.saleValue, 0));
@@ -163,9 +163,12 @@ export function sellerReport({ sales = [], collections = [], returns = [], expen
   const booked = round2(salesValue - salesCost - (returnValue - returnCost) - discount);
   const collectedCash = sumBy(collections, 'cash'), collectedUpi = sumBy(collections, 'upi'), collectedScrap = sumBy(collections, 'scrap');
   const expenseCash = sumBy(expenses, 'cash'), expenseUpi = sumBy(expenses, 'upi');
+  // scrap bought for cash from non-customers: paid out of the money in hand; not an expense (it is stock until sold)
+  const buyTotal = (m) => round2(scrapBuys.filter((x) => !m || (x.mode === 'upi' ? 'upi' : 'cash') === m).reduce((s, x) => s + (Number(x.total) || 0), 0));
+  const scrapBought = buyTotal(), scrapBoughtCash = buyTotal('cash'), scrapBoughtUpi = buyTotal('upi');
   return {
     salesValue, cashSales, returnValue, collected, collectedCash, collectedUpi, collectedScrap, discount, saleDiscount, discountAll: round2(discount + saleDiscount), writtenOff, recovered, booked, realised,
-    expense, expenseCash, expenseUpi, cashInHand: round2(collectedCash - expenseCash),
+    expense, expenseCash, expenseUpi, scrapBought, scrapBoughtCash, scrapBoughtUpi, cashInHand: round2(collectedCash - expenseCash - scrapBoughtCash),
     net: round2(realised - expense), salesCount: sales.length,
   };
 }
@@ -188,7 +191,7 @@ export function companyReport(sellerReports, companyExpenses = [], scrapLosses =
   return {
     salesValue: sum('salesValue'), cashSales: sum('cashSales'), collected: sum('collected'), collectedCash: sum('collectedCash'), collectedUpi: sum('collectedUpi'), collectedScrap: sum('collectedScrap'), discount: sum('discount'), saleDiscount: sum('saleDiscount'), discountAll: sum('discountAll'), writtenOff: sum('writtenOff'), recovered: sum('recovered'),
     booked: sum('booked'), realised, personalExpense: personal, companyExpense, companyExpenseCash, companyExpenseUpi, scrap,
-    scrapSold, scrapSoldCredited, scrapGain,
+    scrapSold, scrapSoldCredited, scrapGain, scrapBought: sum('scrapBought'), scrapBoughtCash: sum('scrapBoughtCash'), scrapBoughtUpi: sum('scrapBoughtUpi'),
     cashInHand: round2(sum('cashInHand') - companyExpenseCash + scrapSoldCash),
     net: round2(realised - personal - companyExpense - scrap + scrapGain),
   };

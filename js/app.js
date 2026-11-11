@@ -317,6 +317,7 @@ const routes = [
   [/^#\/upi$/, renderUpiSetup],
   [/^#\/items$/, renderItemNames],
   [/^#\/writeoffs$/, renderWriteoffs],
+  [/^#\/scrap-buy$/, renderScrapBuy],
   [/^#\/cash-sale$/, renderCashSale],
   [/^#\/catalog$/, renderCatalog],
   [/^#\/catalog-edit\/([\w-]+)$/, renderCatalogEdit],
@@ -367,16 +368,17 @@ async function renderHome() {
   const d = today(), sid = S.sid;
   view.innerHTML = sellerBar() + `<div class="loading">…</div>`;
   bindSellerBar();
-  const [cols, exps, notes, visits, orders, closed] = await Promise.all([
+  const [cols, exps, notes, visits, orders, closed, buys] = await Promise.all([
     F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', d))),
     F.fetchAll(F.query(F.sellerCol(sid, 'expenses'), F.where('date', '==', d))),
     F.fetchAll(F.query(F.sellerCol(sid, 'notes'), F.where('done', '==', false))),
     F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', d))),
     F.fetchAll(F.query(F.sellerCol(sid, 'orders'), F.where('status', '==', 'pending'))),
     F.getDoc(F.sellerDoc(sid, 'dayClose', d)).then((x) => x.exists()).catch(() => false),
+    F.fetchAll(F.query(F.sellerCol(sid, 'scrapBuys'), F.where('date', '==', d))).catch(() => []),
   ]);
   if (location.hash && location.hash !== '#/home') return;
-  const fig = L.sellerReport({ collections: cols, expenses: exps });
+  const fig = L.sellerReport({ collections: cols, expenses: exps, scrapBuys: buys });
   const due = notes.filter((n) => n.dueDate && n.dueDate <= d).sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
   const soon = notes.filter((n) => n.dueDate && n.dueDate > d).sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1)).slice(0, 10);
   const noteRow = (n) => `<li class="task ${n.dueDate < d ? 'late' : ''}">
@@ -389,7 +391,7 @@ async function renderHome() {
   view.innerHTML = sellerBar() + `
     <div class="stats">
       <a class="stat" href="#/collections" id="colStat" onclick="try{sessionStorage.setItem('colDay','')}catch(e){}"><span>${t("Today's collection")} ›</span><b>${money(fig.collected)}</b><small>${splitLine(fig.collectedCash, fig.collectedUpi, fig.collectedScrap)}</small></a>
-      <a class="stat" href="#/expenses"><span>${t('Cash in hand')} ›</span><b>${money(fig.cashInHand)}</b><small>${t('Expenses')} ${money(fig.expense)}</small></a>
+      <a class="stat" href="#/expenses"><span>${t('Cash in hand')} ›</span><b>${money(fig.cashInHand)}</b><small>${t('Expenses')} ${money(fig.expense)}${fig.scrapBought ? ` · ♻️ ${money(fig.scrapBought)}` : ''}</small></a>
     </div>
     ${alerts.map(alertCard).join('')}
     ${routeTile(new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), new Set(visits.map((v) => v.customerId)))}
@@ -2460,15 +2462,15 @@ async function renderExpenses(company) {
 // ---------- reports ----------
 async function sellerData(sid, from, to) {
   const rng = (name) => F.fetchAll(F.query(F.sellerCol(sid, name), F.where('date', '>=', from), F.where('date', '<=', to)));
-  const [sales, collections, returns, expenses, writeoffs] = await Promise.all([rng('sales'), rng('collections'), rng('returns'), rng('expenses'), rng('writeoffs')]);
-  return { sales, collections, returns, expenses, writeoffs };
+  const [sales, collections, returns, expenses, writeoffs, scrapBuys] = await Promise.all([rng('sales'), rng('collections'), rng('returns'), rng('expenses'), rng('writeoffs'), rng('scrapBuys').catch(() => [])]);
+  return { sales, collections, returns, expenses, writeoffs, scrapBuys };
 }
 async function sellerFigures(sid, from, to) { return L.sellerReport(await sellerData(sid, from, to)); }
 
 // Profit figures are not shown any more (no purchase prices in the app; the margin-based estimate misled more
 // than it helped). The money logic still keeps them inside the data, so they can come back if costs are entered later.
 const REP_FIELDS = [['salesValue', 'Sales'], ['cashSales', '— Cash sales'], ['collected', 'Collected'], ['collectedCash', '— Cash'], ['collectedUpi', '— UPI'], ['collectedScrap', '— Scrap'],
-  ['discountAll', 'Discounts given'], ['discount', '— on instalments'], ['saleDiscount', '— on sales'], ['writtenOff', 'Written off (bad debt)'], ['recovered', '— got back later'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'], ['cashInHand', 'Cash in hand']];
+  ['discountAll', 'Discounts given'], ['discount', '— on instalments'], ['saleDiscount', '— on sales'], ['writtenOff', 'Written off (bad debt)'], ['recovered', '— got back later'], ['expense', 'Personal expenses'], ['expenseCash', '— Cash'], ['expenseUpi', '— UPI'], ['scrapBought', 'Scrap bought'], ['scrapBoughtCash', '— Cash'], ['scrapBoughtUpi', '— UPI'], ['cashInHand', 'Cash in hand']];
 const repRowCls = (k) => (k === 'cashInHand' ? 'cash' : k === 'writtenOff' ? 'risk' : /Cash$|Upi$|Scrap$|^cashSales$|^discount$|^saleDiscount$|^recovered$/.test(k) ? 'sub' : '');
 const repLbl = (l) => (l.startsWith('— ') && l !== '— UPI' ? '— ' + t(l.slice(2)) : t(l));
 const shiftDate = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -2641,10 +2643,11 @@ async function renderReport() {
         <tr><td>${t('Company expenses')}</td><td>− ${money(co.companyExpense)}</td></tr>
         <tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.companyExpenseCash)}</td></tr>
         <tr class="sub"><td>— UPI</td><td>${money(co.companyExpenseUpi)}</td></tr>
+        ${co.scrapBought ? `<tr><td>${t('Scrap bought')}</td><td>− ${money(co.scrapBought)}</td></tr><tr class="sub"><td>— ${t('Cash')}</td><td>${money(co.scrapBoughtCash)}</td></tr><tr class="sub"><td>— UPI</td><td>${money(co.scrapBoughtUpi)}</td></tr>` : ''}
         ${ssales.length ? `<tr><td>${t('Scrap sold')}<small>${t('credited value')} ${money(co.scrapSoldCredited)}</small></td><td>${money(co.scrapSold)}</td></tr>
         <tr class="sub"><td>${co.scrapGain >= 0 ? t('Scrap gain') : t('Scrap loss')}</td><td>${co.scrapGain >= 0 ? '+' : '−'} ${money(Math.abs(co.scrapGain))}</td></tr>` : ''}
         <tr class="cash"><td>${t('Cash in hand')}</td><td>${money(co.cashInHand)}</td></tr></table>
-        <p class="muted small">${t('Cash in hand = cash collected − expenses paid in cash + money from scrap sold. Scrap taken as payment is not cash until it is sold.')}</p>
+        <p class="muted small">${t('Cash in hand = cash collected − expenses paid in cash − cash paid for scrap bought + money from scrap sold. Scrap is not cash until it is sold.')}</p>
         ${collectionBars(allCols, from, to, L.round2(prevs.reduce((s, v) => s + v, 0)), pFrom, pTo)}
         ${growthHtml(g)}
         <button class="btn" id="pdf">PDF</button>`;
@@ -2896,6 +2899,7 @@ function renderMenu() {
     <li><a href="#/shop-link">🛍️ ${t('Shop link')}</a></li>
     ${S.sid ? `<li><a href="#/upi">📲 ${t('My UPI')}</a></li>` : ''}
     ${S.sid ? `<li><a href="#/items">🏷️ ${t('Item names')}</a></li>` : ''}
+    ${S.sid ? `<li><a href="#/scrap-buy">♻️ ${t('Buy scrap')}</a></li>` : ''}
     ${S.sid || isAdmin() ? `<li><a href="#/writeoffs">🚫 ${t('Write-offs')}</a></li>` : ''}
     ${isAdmin() ? `<li><a href="#/company-expenses">🏢 ${t('Company expenses')}</a></li>
       <li><a href="#/scrap">♻️ ${t('Scrap')}</a></li>
@@ -3034,7 +3038,7 @@ async function renderBackup() {
       const users = Object.entries(S.users).map(([uid, u]) => ({ uid, ...u }));
       const keys = [...new Set(users.filter((u) => u.role === 'seller').map((u) => u.sellerKey || u.uid))];
       const holder = (k) => users.filter((u) => (u.sellerKey || u.uid) === k && !u.replaced).sort((a, b) => (a.active === false) - (b.active === false))[0]?.name || k;
-      const per = { customers: [], accounts: [], sales: [], collections: [], returns: [], notes: [], expenses: [], visits: [], orders: [], writeoffs: [] };
+      const per = { customers: [], accounts: [], sales: [], collections: [], returns: [], notes: [], expenses: [], visits: [], orders: [], writeoffs: [], scrapBuys: [] };
       for (const k of keys) {
         const got = await Promise.all(Object.keys(per).map((c) => F.fetchAll(F.sellerCol(k, c))));
         Object.keys(per).forEach((c, i) => got[i].forEach((d) => per[c].push({ seller: holder(k), ...d })));
@@ -3050,6 +3054,7 @@ async function renderBackup() {
       add('Returns', per.returns.map((x) => ({ seller: x.seller, date: x.date, customer: x.cash ? 'Cash sale' : cname[x.customerId], account: aname[x.accountId], items: items(x.items), condition: x.condition, credited: x.credited ? 'yes' : 'no', amount: x.amount, cost: x.cost })));
       add('Notes', per.notes.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId] || x.customerName, note: x.text, remindOn: x.dueDate, done: x.done ? 'yes' : 'no' })));
       add('Expenses', per.expenses.map((x) => ({ seller: x.seller, date: x.date, type: x.category, mode: x.mode === 'upi' ? 'UPI' : 'Cash', amount: x.amount, note: x.note })));
+      add('Scrap bought', per.scrapBuys.map((x) => ({ seller: x.seller, date: x.date, name: x.name || '', phone: x.phone || '', scrap: (x.items || []).map((i) => `${i.type} ${i.value}`).join('; '), amount: x.total, mode: MODE_EN[x.mode] || 'Cash', enteredBy: userName(x.by), at: when(x.createdAt) })));
       add('Write-offs', per.writeoffs.map((x) => ({ seller: x.seller, date: x.date, old: x.old ? 'yes' : '', customer: cname[x.customerId] || x.customerName, phone: x.phone || '', place: x.place || '', account: aname[x.accountId], amount: x.amount, recovered: x.recovered || 0, reason: x.reason })));
       add('Visits', per.visits.map((x) => ({ seller: x.seller, date: x.date, customer: cname[x.customerId], reason: x.reason, promisedDate: x.promiseDate || '', note: x.note })));
       add('Orders', per.orders.map((x) => ({ seller: x.seller, ordered: when(x.createdAt), customer: x.customerName, items: (x.items || []).map((i) => `${i.name} x${i.qty}`).join('; '), deliveryDate: x.deliveryDate, status: x.status, note: x.note })));
@@ -3099,7 +3104,7 @@ function renderAppSettings() {
 
 // ---------- delete all test data (admin) ----------
 const WIPE_TOP = ['stock', 'purchases', 'billPhotos', 'complaints', 'scrapLosses', 'companyExpenses', 'catalog', 'catalogPhotos', 'demand', 'scrapIn', 'scrapSales', 'stockMoves', 'phoneIndex', 'nameMap', 'meals', 'auditLog'];
-const WIPE_BOOK = ['customers', 'accounts', 'sales', 'collections', 'returns', 'notes', 'expenses', 'visits', 'orders', 'routeChanges', 'dayClose', 'meta', 'writeoffs'];
+const WIPE_BOOK = ['customers', 'accounts', 'sales', 'collections', 'returns', 'notes', 'expenses', 'visits', 'orders', 'routeChanges', 'dayClose', 'meta', 'writeoffs', 'scrapBuys'];
 async function wipeTestData() {
   if (!isAdmin()) return;
   if (!navigator.onLine) return toast(t('Connect to the internet first'), true);
@@ -3267,7 +3272,7 @@ async function renderScrap() {
       <button class="btn primary" type="submit">${t('Save scrap sale')}</button></form>` : ''}
     <h3>${t('Scrap sales')}</h3><ul class="list">${sales.sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 20).map((x) => `<li class="row"><div><b>${fmtDate(x.date)}</b><small>${esc((x.items || []).map((i) => t(i.type)).join(', '))} · ${t('credited')} ${money(x.credited)}</small></div>
       <div class="amt">${money(x.received)}<small class="${x.received - x.credited >= 0 ? '' : 'neg'}">${x.received - x.credited >= 0 ? '+' : '−'}${money(Math.abs(x.received - x.credited))}</small></div></li>`).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>
-    <h3>${t('Scrap taken from customers')}</h3><ul class="list">${ins.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 30).map((x) => `<li class="row"><div><b>${esc(x.customerName || '')}</b><small>${fmtDate(x.date)} · ${esc(sellerName(x.sellerKey))} · ${esc((x.items || []).map((i) => `${t(i.type)} ${money(i.value)}`).join(', '))}</small></div><div class="amt">${money(x.total)}</div></li>`).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>`;
+    <h3>${t('Scrap taken in')}</h3><ul class="list">${ins.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 30).map((x) => `<li class="row"><div><b>${x.bought ? '💵 ' : ''}${esc(x.customerName || '')}</b><small>${fmtDate(x.date)} · ${esc(sellerName(x.sellerKey))}${x.bought ? ' · ' + t('Bought for cash') : ''} · ${esc((x.items || []).map((i) => `${t(i.type)} ${money(i.value)}`).join(', '))}</small></div><div class="amt">${money(x.total)}</div></li>`).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>`;
   const f = $('#ssf');
   if (!f) return;
   const credited = () => L.round2($$('[name=ty]:checked', f).reduce((s2, c) => s2 + Number(c.dataset.v), 0));
@@ -3913,6 +3918,55 @@ async function renderWriteoffs() {
   await load(); draw();
 }
 
+// ---------- scrap bought for cash from people who are not customers ----------
+/** The seller pays cash/UPI from the money in hand; the scrap joins scrap stock at the price paid. */
+async function renderScrapBuy() {
+  setTitle(t('Buy scrap'), '#/menu');
+  if (needSeller()) return;
+  const sid = S.sid;
+  const draw = async () => {
+    const list = (await F.fetchAll(F.sellerCol(sid, 'scrapBuys')).catch(() => [])).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0))).slice(0, 40);
+    view.innerHTML = sellerBar() + `<form id="sbf" class="card form">
+        <p class="small muted" style="margin-top:0">${t('For scrap bought for cash from someone who is not a customer. The money paid comes out of your cash in hand; the scrap goes to scrap stock at this price.')}</p>
+        <div class="two"><label>${t('Name')} <small class="muted">(${t('optional')})</small><input name="nm"></label><label>${t('Phone')} <small class="muted">(${t('optional')})</small><input name="ph" type="tel" inputmode="tel"></label></div>
+        <label>${t('Scrap')}</label><div id="sblines">${scrapLineHtml()}</div>
+        <button type="button" class="btn small ghost" id="sbAdd">+ ${t('Add type')}</button>
+        <div class="kv"><span>${t('Total paid')}</span><b id="sbTot">${money(0)}</b></div>
+        <label>${t('Paid by')}</label>${payPicker('sbmode', 'cash')}
+        <label>${t('Date')}<input name="date" type="date" value="${today()}" max="${today()}"></label>
+        <button class="btn primary" type="submit">${t('Save scrap bought')}</button></form>
+      <h3>${t('Scrap bought')}</h3><ul class="list" id="sblist">${list.map((x) => `<li class="row"><div><b>${esc(x.name || t('Walk-in seller'))}</b><small>${fmtDate(x.date)}${x.phone ? ' · ' + esc(x.phone) : ''} · ${esc((x.items || []).map((i) => `${t(i.type)} ${money(i.value)}`).join(', '))} · ${modeLabel(x.mode)}</small></div>
+        <div class="amt">${money(x.total)}</div>${isAdmin() || x.by === S.user.uid ? `<button class="x" data-sbdel="${x.id}" title="${t('Delete')}">×</button>` : ''}</li>`).join('') || `<li class="muted">${t('None yet')}</li>`}</ul>`;
+    const f = $('#sbf');
+    const items = () => $$('#sblines .scrapline').map((r) => ({ type: $('[name=st]', r).value, value: L.round2(num($('[name=sv]', r).value)) })).filter((x) => x.value > 0);
+    const total = () => L.round2(items().reduce((s, x) => s + x.value, 0));
+    const bindS = () => { $$('#sblines [name=sv]').forEach((i) => (i.oninput = () => ($('#sbTot').textContent = money(total())))); $$('#sblines [data-srm]').forEach((b) => (b.onclick = () => { if ($$('#sblines .scrapline').length > 1) b.parentElement.remove(); $('#sbTot').textContent = money(total()); })); };
+    bindS();
+    $('#sbAdd').onclick = () => { $('#sblines').insertAdjacentHTML('beforeend', scrapLineHtml()); bindS(); };
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      const it = items(), amt = total();
+      if (!(amt > 0)) return toast(t('Enter the amount'), true);
+      const mode = pickedMode('sbmode', f) === 'upi' ? 'upi' : 'cash', date = f.date.value || today(), now = Date.now();
+      const col = F.sellerCol(sid, 'scrapBuys'), id = F.newId(col), b = F.writeBatch(F.db), name = f.nm.value.trim();
+      const doc = { date, name, phone: cleanPhone(f.ph.value.trim()), items: it, total: amt, mode, createdAt: now, by: S.user.uid };
+      b.set(F.doc(col, id), doc);
+      b.set(F.doc(F.db, 'scrapIn', id), { sellerKey: sid, buyId: id, bought: true, date, items: it, total: amt, customerName: name || t('Walk-in seller'), createdAt: now, by: S.user.uid });
+      F.audit(b, S.user.uid, 'scrap-buy', `sellers/${sid}/scrapBuys/${id}`, null, doc);
+      F.commit(b, onWriteError); toast(t('Saved')); closedReminder(sid, [date]); setTimeout(draw, 200);
+    };
+    $$('[data-sbdel]').forEach((btn) => (btn.onclick = () => {
+      const x = list.find((y) => y.id === btn.dataset.sbdel);
+      if (!x || !confirm(`${t('Delete this entry?')}\n${x.name || t('Walk-in seller')} · ${money(x.total)}`)) return;
+      const b = F.writeBatch(F.db);
+      b.delete(F.sellerDoc(sid, 'scrapBuys', x.id)); b.delete(F.doc(F.db, 'scrapIn', x.id));
+      F.audit(b, S.user.uid, 'scrap-buy-delete', `sellers/${sid}/scrapBuys/${x.id}`, x, null);
+      F.commit(b, onWriteError); toast(t('Deleted')); closedReminder(sid, [x.date]); setTimeout(draw, 200);
+    }));
+  };
+  await draw();
+}
+
 function renderUpiSetup() {
   setTitle(t('My UPI'), '#/menu');
   if (needSeller()) return;
@@ -3983,8 +4037,8 @@ async function renderCloseDay() {
   const draw = async () => {
     view.innerHTML = sellerBar() + '<div class="loading">…</div>';
     const q = (n) => F.fetchAll(F.query(F.sellerCol(sid, n), F.where('date', '==', day)));
-    const [cols, exps, visits, closedDoc] = await Promise.all([q('collections'), q('expenses'), q('visits'), F.getDoc(F.sellerDoc(sid, 'dayClose', day))]);
-    const fig = L.sellerReport({ collections: cols, expenses: exps });
+    const [cols, exps, visits, closedDoc, buys] = await Promise.all([q('collections'), q('expenses'), q('visits'), F.getDoc(F.sellerDoc(sid, 'dayClose', day)), q('scrapBuys').catch(() => [])]);
+    const fig = L.sellerReport({ collections: cols, expenses: exps, scrapBuys: buys });
     const plan = L.dayPlan(day, S.routeChanges, ROUTE_DAYS), seen = new Set();
     const routeList = plan.days.flatMap((pd) => L.routeSort(Object.values(S.customers).filter((c) => daysOf(c).includes(pd.day) && !seen.has(c.id) && seen.add(c.id)), pd.day)).filter((c) => !pausedCust(c.id));
     const paid = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), vis = new Map(visits.map((v) => [v.customerId, v]));
@@ -3995,7 +4049,7 @@ async function renderCloseDay() {
     const closed = closedDoc.exists() ? closedDoc.data() : null;
     const text = [`*${APP_NAME} — ${t('Day closing')}*`, `${S.profile.role === 'admin' ? sellerName(sid) : S.profile.name} · ${fmtDate(day)}`, '',
       `${t('Collected')}: *${money(fig.collected)}* (${cols.filter((x) => x.kind !== 'discount' && x.kind !== 'refund').length})`, `  ${t('Cash')} ${money(fig.collectedCash)} · UPI ${money(fig.collectedUpi)}${fig.collectedScrap ? ` · ${t('Scrap')} ${money(fig.collectedScrap)}` : ''}`,
-      `${t('Expenses')}: ${money(fig.expense)} (${t('Cash')} ${money(fig.expenseCash)} · UPI ${money(fig.expenseUpi)})`, `*${t('Cash in hand')}: ${money(fig.cashInHand)}*`, '',
+      `${t('Expenses')}: ${money(fig.expense)} (${t('Cash')} ${money(fig.expenseCash)} · UPI ${money(fig.expenseUpi)})`, fig.scrapBought ? `${t('Scrap bought')}: ${money(fig.scrapBought)} (${t('Cash')} ${money(fig.scrapBoughtCash)} · UPI ${money(fig.scrapBoughtUpi)})` : '', `*${t('Cash in hand')}: ${money(fig.cashInHand)}*`, '',
       routeList.length ? `${t('Route')}: ${visited}/${routeList.length} ${t('visited')}` : '',
       nopay.length ? `${t('No payment')}: ${nopay.map((v) => `${name(v.customerId)} (${reasonLabel(v.reason)}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''})`).join(', ')}` : '',
       notSeen.length ? `${t('Not visited')}: ${notSeen.map((c) => c.name).join(', ')}` : ''].filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n').trim();
@@ -4010,6 +4064,7 @@ async function renderCloseDay() {
         <div class="kv"><span>${t('Expenses')}</span><b>− ${money(fig.expense)}</b></div>
         <div class="kv small"><span>— ${t('Cash')}</span><span>${money(fig.expenseCash)}</span></div>
         <div class="kv small"><span>— UPI</span><span>${money(fig.expenseUpi)}</span></div>
+        ${fig.scrapBought ? `<div class="kv"><span>♻️ ${t('Scrap bought')}</span><b>− ${money(fig.scrapBought)}</b></div><div class="kv small"><span>— ${t('Cash')}</span><span>${money(fig.scrapBoughtCash)}</span></div><div class="kv small"><span>— UPI</span><span>${money(fig.scrapBoughtUpi)}</span></div>` : ''}
         <div class="balance" style="margin-top:8px"><span>${t('Cash in hand')}</span><b>${money(fig.cashInHand)}</b></div></div>
       ${routeList.length ? `<div class="card"><b>🛵 ${t('Route')}: ${visited} / ${routeList.length} ${t('visited')}</b>
         ${nopay.length ? `<h3>⊘ ${t('No payment')}</h3>${nopay.map((v) => `<div class="kv"><span>${esc(name(v.customerId))}</span><span class="small">${esc(reasonLabel(v.reason))}${v.promiseDate ? ' → ' + fmtDate(v.promiseDate) : ''}</span></div>`).join('')}` : ''}
