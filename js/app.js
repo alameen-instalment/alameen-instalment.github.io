@@ -221,6 +221,19 @@ const accountsOf = (cid) => Object.values(S.accounts).filter((a) => a.customerId
 // A customer is "paused" when every open account is inactive: kept in the route list (marked ⏸) but not counted.
 const pausedCust = (cid) => { const o = accountsOf(cid).filter((a) => a.status !== 'closed'); return o.length > 0 && o.every((a) => a.inactive); };
 const pauseMark = (cid) => (pausedCust(cid) ? `<span class="pill pause" title="${t('Inactive')}">⏸</span> ` : '');
+// ---------- revisit today: go back later the same day (customer.revisit = { date, at }) ----------
+// Open until the customer pays today or another no-payment visit is saved after it was planned; gone the next day.
+let todayVisits = [];
+const revisitPlanned = (c) => c?.revisit?.date === today();
+const revisitOpen = (c, paidSet, vis = todayVisits) => revisitPlanned(c) && !paidSet.has(c.id) && !vis.some((v) => v.customerId === c.id && (v.createdAt || 0) > (c.revisit.at || 0));
+const revisitMark = (c, paidSet) => (revisitOpen(c, paidSet) ? `<span class="pill rv" title="${t('Revisit today')}">🔁</span> ` : '');
+function setRevisit(cid, on, b = null, at = Date.now()) {
+  const own = !b; b ||= F.writeBatch(F.db);
+  const v = on ? { date: today(), at } : null;
+  b.update(F.sellerDoc(S.sid, 'customers', cid), { revisit: v || F.deleteField() });
+  if (S.customers[cid]) { if (v) S.customers[cid].revisit = v; else delete S.customers[cid].revisit; }
+  if (own) F.commit(b, onWriteError);
+}
 const openBalance = (cid) => L.round2(accountsOf(cid).filter((a) => a.status !== 'closed').reduce((s, a) => s + (a.balance || 0), 0));
 
 // ---------- auth ----------
@@ -395,6 +408,9 @@ async function renderHome() {
     </div>
     ${alerts.map(alertCard).join('')}
     ${routeTile(new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), new Set(visits.map((v) => v.customerId)))}
+    ${(() => { const paidSet = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
+      const rv = Object.values(S.customers).filter((c) => revisitOpen(c, paidSet, visits)).sort((a, b) => a.revisit.at - b.revisit.at);
+      return rv.length ? `<div class="card rvcard"><b>🔁 ${t('Revisit today')} (${rv.length})</b><ul class="list">${rv.map((c) => `<li class="row"><a href="#/customer/${c.id}" style="flex:1;text-decoration:none;color:inherit"><b>${esc(c.name)}</b><small>${esc(placeOf(c))}</small></a><span class="amt">${money(openBalance(c.id))}</span><button class="x" data-rvx="${c.id}" title="${t('Remove')}">×</button></li>`).join('')}</ul></div>` : ''; })()}
     ${deliver.length ? `<a class="banner" href="#/orders" style="display:block;text-decoration:none"><b>🚚 ${t("Today's deliveries")}: ${deliver.length}</b>
       <span class="small muted">${esc(Object.entries(deliver.flatMap((o) => o.items).reduce((m, i) => ((m[i.name] = (m[i.name] || 0) + Number(i.qty || 0)), m), {})).map(([n, q]) => `${n} × ${q}`).join(', '))}</span></a>` : ''}
     <div class="grid2">
@@ -416,6 +432,7 @@ async function renderHome() {
   bindAlerts();
   bindMeal();
   const ut = $('#upiTile'); if (ut) ut.onclick = () => showUpiQr();
+  $$('[data-rvx]').forEach((x) => (x.onclick = () => { setRevisit(x.dataset.rvx, false); const li = x.closest('li'), card = x.closest('.rvcard'); li.remove(); if (!card.querySelector('li')) card.remove(); }));
   mountCalendar($('#calw')); mountCalculator($('#calcw'));
   setTimeout(maintainBook, 3000);
   const rt = $('#routeTile'); if (rt) rt.onclick = () => { try { sessionStorage.setItem('custDay', 'today'); } catch {} go('#/customers'); };
@@ -827,7 +844,7 @@ function renderCustomers() {
       F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', today())))]);
     lastAct = lastActivity(cols, vis);
     paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
-    visitedToday = new Set(vis.map((v) => v.customerId));
+    visitedToday = new Set(vis.map((v) => v.customerId)); todayVisits = vis;
     await loadPromises(sid);
     draw();
   };
@@ -868,7 +885,7 @@ function renderCustomers() {
         const dm = byRoute ? dueMark(c.id, paid) : '';
         const dim = dm || (byRoute && !paid && pausedCust(c.id)); // not due yet, or ⏸ inactive: shown faded so nobody goes there by mistake
         return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dim ? 'notdue' : ''}">
-          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : ''}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : ''}${revisitMark(c, paidToday)}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
@@ -1363,11 +1380,13 @@ async function renderCustomer(cid) {
       </div>
       <div class="contact" style="margin-top:0">
         <button class="btn" id="visitBtn">⊘ ${t('Visited / contacted – no payment')}</button>
+        <button class="btn ${revisitPlanned(c) ? 'on' : ''}" id="rvBtn">🔁 ${revisitPlanned(c) ? t('Revisit planned ✓') : t('Revisit today')}</button>
         <a class="btn" href="#/order/${cid}">🚚 + ${t('Order')}</a></div>
       <form id="vf" class="card form" hidden>
         <b>${t('Visited / contacted – no payment')}</b>
         <div class="seg" role="radiogroup"><label><input type="radio" name="via" value="visit" checked><span>🏠 ${t('In person')}</span></label><label><input type="radio" name="via" value="phone"><span>📞 ${t('Phone')}</span></label></div>
         <div class="reasons" id="vreasons"></div>
+        <label class="chk"><input type="checkbox" name="rv"> 🔁 ${t('Revisit today')}</label>
         <label class="chk"><input type="checkbox" name="pk"> 📅 ${t('Promised to pay on a date')}</label>
         <label id="pdl" hidden>${t('Promised to pay on')}<input name="pd" type="date" min="${today()}" value="${nextDay}"></label>
         <label>${t('Note (optional)')}<input name="note"></label>
@@ -1448,6 +1467,7 @@ async function renderCustomer(cid) {
     $('#qSale').onclick = () => quick('sale');
     const vf = $('#vf');
     $('#visitBtn').onclick = () => { vf.hidden = !vf.hidden; };
+    $('#rvBtn').onclick = () => { const on = !revisitPlanned(c); setRevisit(cid, on); toast(on ? t('Added to revisit today') : t('Removed from revisit')); draw(); };
     const showReasons = () => { const via = pickedMode('via', vf) === 'phone' ? 'phone' : 'visit';
       $('#vreasons').classList.toggle('compact', via === 'phone');
       $('#vreasons').innerHTML = CONTACT_WAYS[via].map((k, i) => `<label><input type="radio" name="r" value="${k}" ${i ? '' : 'checked'}><span>${reasonLabel(k)}</span></label>`).join(''); };
@@ -1459,6 +1479,7 @@ async function renderCustomer(cid) {
       if (vf.pk.checked && !pd) return toast(t('Choose the promised date'), true);
       const vcol = F.sellerCol(sid, 'visits');
       b.set(F.doc(vcol, F.newId(vcol)), { customerId: cid, date: today(), via, reason, promiseDate: pd, note: vf.note.value.trim(), createdAt: now, by: S.user.uid });
+      if (vf.rv.checked) setRevisit(cid, true, b, now); // planned with this visit: this visit does not close it
       if (pd) { const ncol = F.sellerCol(sid, 'notes'); b.set(F.doc(ncol, F.newId(ncol)), { customerId: cid, customerName: c.name, kind: 'promise', text: t('Promised to pay') + (vf.note.value.trim() ? ' · ' + vf.note.value.trim() : ''), dueDate: pd, done: false, date: today(), createdAt: now }); }
       F.commit(b, onWriteError); toast(t('Visit saved')); rescoreSoon(cid); draw();
     };
@@ -1513,7 +1534,7 @@ function renderPick(action) {
     } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
     let n = 0;
     const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : '');
-    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${pauseMark(c.id)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
+    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${revisitMark(c, paidToday)}${pauseMark(c.id)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
         const seq = sec.route ? ++n : 0, dm = sec.route ? dueMark(c.id, paidToday.has(c.id)) : '', faded = dm || (sec.route && !paidToday.has(c.id) && pausedCust(c.id));
@@ -1535,7 +1556,7 @@ function renderPick(action) {
     F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', today())))]).then(([cols, vis]) => {
     if (!$('#plist')) return; // left the page already
     paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
-    visitedToday = new Set(vis.map((v) => v.customerId));
+    visitedToday = new Set(vis.map((v) => v.customerId)); todayVisits = vis;
     lastAct = lastActivity(cols, vis);
     return loadPromises(sid);
   }).then(() => {

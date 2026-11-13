@@ -498,3 +498,9 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .ledger tr.recovery td { color: var(--muted); }
 .acctiles[hidden] { display: none; }
 .worow.faded { opacity: .6; }
+/* revisit today */
+.pill.rv { background: var(--card2); font-size: 11px; padding: 1px 5px; vertical-align: middle; }
+#rvBtn.on { border-color: var(--accent); color: var(--accent-text); font-weight: 700; }
+.rvcard .list { margin: 6px 0 0; }
+.rvcard .row { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+.rvcard .x { background: none; border: 0; color: var(--muted); font-size: 20px; padding: 0 4px; width: auto; }
