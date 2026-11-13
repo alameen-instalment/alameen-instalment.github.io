@@ -481,6 +481,8 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .vpd { margin-top: 6px; }
 #vf .chk { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; }
 #vf .chk input { width: 20px; height: 20px; margin: 0; }
+.recdue { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
+.recdue input { width: 20px; height: 20px; margin: 0; padding: 0; border: 0; box-shadow: none; flex: none; outline: none; }
 /* v35: hold a row to drag it; undo bar */
 #clist.holdable a.row { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 #clist.dragmode { touch-action: none; }

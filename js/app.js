@@ -2827,7 +2827,7 @@ function renderRecords() {
     <h3>📊 ${t('Customer statements (Excel)')}</h3>
     <p class="muted small">${t('One sheet per customer with every sale, advance, collection and return, and the running balance. A summary sheet comes first.')}</p>
     <div class="two"><label>${t('Route day')}<select id="recDay"><option value="all">${t('All days')}</option>${ROUTE_DAYS.map((d) => `<option value="${d}">${dayLabel(d)}</option>`).join('')}<option value="none">${t('No day')}</option></select></label>
-      <label class="chk" style="align-self:end"><input type="checkbox" id="recDue"> ${t('Only customers with a balance')}</label></div>
+      <label class="chk recdue" style="align-self:end"><input type="checkbox" id="recDue"> ${t('Only customers with a balance')}</label></div>
     <button class="btn primary" id="stmtX">${t('Download statements')}</button><div id="stS" class="muted small"></div></div>`;
   const sel = $('#recScope'); if (sel) sel.onchange = () => { try { sessionStorage.setItem('recScope', sel.value); } catch {} };
   $('#stmtX').onclick = async () => {
