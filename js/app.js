@@ -2771,8 +2771,7 @@ async function makePdf({ title, subtitle, head, rows, foot = [], file }) {
     doc.text(`Generated ${new Date().toLocaleString('en-IN')}`, M, H - 20);
     const blob = doc.output('blob');
     const f = new File([blob], file.replace(/[^\w.-]+/g, '_'), { type: 'application/pdf' });
-    if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f], title });
-    else doc.save(f.name);
+    await deliverFile(f);
   } catch (e) {
     if (e.name !== 'AbortError') toast(t('Could not make PDF') + ': ' + e.message, true);
   }
@@ -2797,9 +2796,25 @@ async function loadBook(key, withHistory) {
 }
 
 async function shareOrSave(blob, name, type) {
-  const file = new File([blob], name.replace(/[^\w.-]+/g, '_'), { type });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: file.name });
-  else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+  await deliverFile(new File([blob], name.replace(/[^\w.-]+/g, '_'), { type }));
+}
+function downloadFile(file) { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+/** Share (Android share sheet) or download a finished file. Phones allow sharing only right after a tap; when the file took
+ *  long to make that tap has expired ("Permission denied"), so a "file ready" bar asks for one more tap. */
+async function deliverFile(file) {
+  if (!(navigator.canShare && navigator.canShare({ files: [file] }))) return downloadFile(file);
+  try { await navigator.share({ files: [file], title: file.name }); }
+  catch (e) {
+    if (e.name === 'AbortError') return;
+    if (e.name !== 'NotAllowedError') throw e;
+    $('#fileReady')?.remove();
+    document.body.insertAdjacentHTML('beforeend', `<div class="banner float" id="fileReady"><b>✅ ${t('File ready')}</b><div class="small muted">${esc(file.name)}</div>
+      <div class="contact"><button class="btn primary" id="frShare">📤 ${t('Share / save')}</button><button class="btn" id="frDl">⬇️ ${t('Download')}</button><button class="btn" id="frX">×</button></div></div>`);
+    const bar = $('#fileReady');
+    $('#frShare').onclick = async () => { try { await navigator.share({ files: [file], title: file.name }); bar.remove(); } catch (er) { if (er.name !== 'AbortError') { downloadFile(file); bar.remove(); } } };
+    $('#frDl').onclick = () => { downloadFile(file); bar.remove(); };
+    $('#frX').onclick = () => bar.remove();
+  }
 }
 
 function renderRecords() {
@@ -3078,8 +3093,7 @@ async function renderBackup() {
       const out = X.write(wb, { bookType: 'xlsx', type: 'array' });
       const file = new File([out], `alameen-backup-${today()}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       $('#bs').textContent = `${per.customers.length} ${t('customers')} · ${per.collections.length} ${t('entries')}`;
-      if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: file.name });
-      else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+      await deliverFile(file);
       const bt = F.writeBatch(F.db); bt.set(F.doc(F.db, 'settings', 'main'), { lastBackup: today() }, { merge: true }); F.commit(bt, () => {});
     } catch (err) {
       if (err.name !== 'AbortError') toast(t('Backup failed') + ': ' + err.message, true);
