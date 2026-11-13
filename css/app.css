@@ -331,9 +331,9 @@ th small { display: block; font-weight: 400; font-size: 10px; }
 .plist { font-size: 12px; table-layout: fixed; }
 .plist th, .plist td { padding: 5px 4px; text-align: left; border: 1px solid var(--line); overflow-wrap: anywhere; }
 .plist td.num { text-align: right; white-space: nowrap; }
-.plist td.pl { font-weight: 700; white-space: nowrap; }
-.plist th:nth-child(1) { width: 5%; } .plist th:nth-child(2) { width: 17%; } .plist th:nth-child(3) { width: 22%; }
-.plist th:nth-child(4) { width: 16%; } .plist th:nth-child(5) { width: 14%; } .plist th:nth-child(6) { width: 13%; } .plist th:nth-child(7) { width: 13%; }
+.plist td.pl { font-weight: 700; } /* long house no. · lane wraps inside its own column */
+.plist th:nth-child(1) { width: 5%; } .plist th:nth-child(2) { width: 19%; } .plist th:nth-child(3) { width: 21%; }
+.plist th:nth-child(4) { width: 15%; } .plist th:nth-child(5) { width: 14%; } .plist th:nth-child(6) { width: 13%; } .plist th:nth-child(7) { width: 13%; }
 @media print {
   @page { size: A4; margin: 10mm; }
   :root, :root[data-theme] { color-scheme: light; --bg: #fff; --card: #fff; --card2: #f3f3f3; --line: #ccc; --ink: #000; --muted: #444; --accent-text: #0F6B4F; }
