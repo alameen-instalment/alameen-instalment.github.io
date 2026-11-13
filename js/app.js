@@ -2802,14 +2802,17 @@ function downloadFile(file) { const a = document.createElement('a'); a.href = UR
 /** Share (Android share sheet) or download a finished file. Phones allow sharing only right after a tap; when the file took
  *  long to make that tap has expired ("Permission denied"), so a "file ready" bar asks for one more tap. */
 async function deliverFile(file) {
-  if (!(navigator.canShare && navigator.canShare({ files: [file] }))) return downloadFile(file);
+  // Chrome on Android refuses to share Excel files ("Permission denied") even though canShare says yes: save those to Downloads.
+  if (!/\.(pdf|png|jpe?g|webp|csv|txt)$/i.test(file.name) || !(navigator.canShare && navigator.canShare({ files: [file] }))) {
+    downloadFile(file); toast(`⬇️ ${t('Saved to Downloads')}: ${file.name}`); return;
+  }
   try { await navigator.share({ files: [file], title: file.name }); }
   catch (e) {
     if (e.name === 'AbortError') return;
     if (e.name !== 'NotAllowedError') throw e;
     $('#fileReady')?.remove();
     document.body.insertAdjacentHTML('beforeend', `<div class="banner float" id="fileReady"><b>✅ ${t('File ready')}</b><div class="small muted">${esc(file.name)}</div>
-      <div class="contact"><button class="btn primary" id="frShare">📤 ${t('Share / save')}</button><button class="btn" id="frDl">⬇️ ${t('Download')}</button><button class="btn" id="frX">×</button></div></div>`);
+      <div class="contact"><button class="btn primary" id="frShare">📤 ${t('Share')}</button><button class="btn" id="frDl">⬇️ ${t('Download')}</button><button class="btn" id="frX">×</button></div></div>`);
     const bar = $('#fileReady');
     $('#frShare').onclick = async () => { try { await navigator.share({ files: [file], title: file.name }); bar.remove(); } catch (er) { if (er.name !== 'AbortError') { downloadFile(file); bar.remove(); } } };
     $('#frDl').onclick = () => { downloadFile(file); bar.remove(); };

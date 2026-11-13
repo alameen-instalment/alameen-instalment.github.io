@@ -19,7 +19,7 @@ const ML = {
   'All days': 'എല്ലാ ദിവസവും',
   'Only customers with a balance': 'ബാക്കിയുള്ളവർ മാത്രം',
   'Download': 'ഡൗൺലോഡ്',
-  'Share / save': 'ഷെയർ / സേവ്',
+  'Saved to Downloads': 'Downloads-ൽ സേവ് ചെയ്തു',
   'Scrap bought': 'വാങ്ങിയ സ്ക്രാപ്പ്',
   'Cash in hand = cash collected − expenses paid in cash − cash paid for scrap bought + money from scrap sold. Scrap is not cash until it is sold.': 'കയ്യിലുള്ള പണം = കിട്ടിയ ക്യാഷ് − ക്യാഷായി കൊടുത്ത ചെലവ് − സ്ക്രാപ്പ് വാങ്ങാൻ കൊടുത്ത ക്യാഷ് + സ്ക്രാപ്പ് വിറ്റ് കിട്ടിയ പണം. സ്ക്രാപ്പ് വിൽക്കുന്നത് വരെ പണമല്ല.',
   'Buy scrap': 'സ്ക്രാപ്പ് വാങ്ങുക',
