@@ -16,6 +16,8 @@ const ML = {
   'Written off': 'എഴുതിത്തള്ളി',
   'Recovered after write-off': 'എഴുതിത്തള്ളിയ ശേഷം കിട്ടിയത്',
   'File ready': 'ഫയൽ തയ്യാർ',
+  'All days': 'എല്ലാ ദിവസവും',
+  'Only customers with a balance': 'ബാക്കിയുള്ളവർ മാത്രം',
   'Download': 'ഡൗൺലോഡ്',
   'Share / save': 'ഷെയർ / സേവ്',
   'Scrap bought': 'വാങ്ങിയ സ്ക്രാപ്പ്',

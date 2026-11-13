@@ -2826,6 +2826,8 @@ function renderRecords() {
     <a class="btn primary" href="#/print-list">${t('Open printable list')}</a>
     <h3>📊 ${t('Customer statements (Excel)')}</h3>
     <p class="muted small">${t('One sheet per customer with every sale, advance, collection and return, and the running balance. A summary sheet comes first.')}</p>
+    <div class="two"><label>${t('Route day')}<select id="recDay"><option value="all">${t('All days')}</option>${ROUTE_DAYS.map((d) => `<option value="${d}">${dayLabel(d)}</option>`).join('')}<option value="none">${t('No day')}</option></select></label>
+      <label class="chk" style="align-self:end"><input type="checkbox" id="recDue"> ${t('Only customers with a balance')}</label></div>
     <button class="btn primary" id="stmtX">${t('Download statements')}</button><div id="stS" class="muted small"></div></div>`;
   const sel = $('#recScope'); if (sel) sel.onchange = () => { try { sessionStorage.setItem('recScope', sel.value); } catch {} };
   $('#stmtX').onclick = async () => {
@@ -2837,16 +2839,33 @@ function renderRecords() {
       const books = recBooks();
       const sheetName = (nm) => { let base = String(nm).replace(/[\[\]:*?/\\]/g, ' ').trim().slice(0, 28) || 'Customer', n = base, i = 2; while (used.has(n.toLowerCase())) n = `${base.slice(0, 26)} ${i++}`; used.add(n.toLowerCase()); return n; };
       const typeName = { opening: 'Opening balance', sale: 'Sale', advance: 'Advance', collection: 'Collection', return: 'Return', discount: 'Discount' };
-      const sheets = [];
+      const sheets = [], dayPick = $('#recDay').value, onlyDue = $('#recDue').checked;
+      const DAY_EN = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 6: 'Sat' }, BAND_EN = { good: 'Good', ok: 'OK', risk: 'Risk', new: 'New' };
       for (const bk of books) {
         const d = await loadBook(bk.key, true);
-        const custs = d.customers.sort((a, b) => a.name.localeCompare(b.name));
-        for (const c of custs) {
-          const accs = d.accounts.filter((a) => a.customerId === c.id).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-          const due = L.round2(accs.filter((a) => a.status !== 'closed').reduce((s2, a) => s2 + (a.balance || 0), 0));
-          const name = sheetName(c.name);
-          summary.push({ Seller: bk.name, Customer: c.name, 'House no.': c.house || '', Lane: c.lane || '', Phone: c.phone || '', Accounts: accs.length, 'Balance due': due, Sheet: name });
-          const rows = [[c.name], [`${placeOf(c)}${placeOf(c) ? '  |  ' : ''}${phonesOf(c).map((p) => `${p.label ? p.label + ': ' : ''}${p.number}`).join(', ')}`], [`Seller: ${bk.name}   |   Printed: ${fmtDate(today())}`], []];
+        const lastPay = {};
+        d.collections.forEach((x) => { if (x.accountId && x.kind !== 'discount' && x.kind !== 'refund' && (!lastPay[x.accountId] || x.date > lastPay[x.accountId])) lastPay[x.accountId] = x.date; });
+        const accsOf = (c) => d.accounts.filter((a) => a.customerId === c.id).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+        const dueOf = (c) => L.round2(accsOf(c).filter((a) => a.status !== 'closed').reduce((s2, a) => s2 + (a.balance || 0), 0));
+        const keep = d.customers.filter((c) => !onlyDue || dueOf(c) > 0.004);
+        // route order: each route day in turn (a customer on two days is listed under both), then customers with no day by name
+        const groups = (dayPick === 'all' ? [...ROUTE_DAYS, 'none'] : [dayPick === 'none' ? 'none' : Number(dayPick)]).map((dd) => [dd,
+          dd === 'none' ? keep.filter((c) => !daysOf(c).length).sort((a, b) => a.name.localeCompare(b.name)) : L.routeSort(keep.filter((c) => daysOf(c).includes(dd)), dd)]);
+        const sheetOf = {};
+        for (const [dd, list] of groups) list.forEach((c, i) => {
+        const accs = accsOf(c), due = dueOf(c);
+        const phones = phonesOf(c).map((p) => `${p.label ? p.label + ': ' : ''}${p.number}`).join(', ');
+        const days = daysOf(c).slice().sort((a, b) => ROUTE_DAYS.indexOf(a) - ROUTE_DAYS.indexOf(b)).map((x) => DAY_EN[x]).join(', ');
+        const sc = c.score?.score ?? null, lp = accs.map((a) => [lastPay[a.id] || '', a.lastPaidOld || ''].sort().pop()).sort().pop() || '';
+        const scoreTxt = sc == null ? 'New' : `${Math.round(sc)} (${BAND_EN[bandOf(sc)]})`;
+        const fresh = !sheetOf[c.id], name = sheetOf[c.id] ||= sheetName(c.name);
+        summary.push({ Seller: bk.name, 'Route day': dd === 'none' ? 'No day' : DAY_EN[dd], 'No.': dd === 'none' ? '' : i + 1, Customer: c.name, 'House no.': c.house || '', Lane: c.lane || '', Address: c.address || '', Phones: phones,
+          'Route days': days, Score: scoreTxt, 'Starting score note': c.prior ? `${c.prior.score}${c.prior.note ? ' · ' + c.prior.note : ''}` : '', Flag: c.ban ? `${c.ban.byName || ''}: ${c.ban.reason}` : '',
+          Accounts: accs.length, 'Balance due': due, 'Last paid': lp ? fmtDate(lp) : '', Sheet: name });
+        if (!fresh) return; // second route day: in the summary again, one statement sheet only
+          const rows = [[c.name], [`House no.: ${c.house || '-'}   |   Lane: ${c.lane || '-'}${c.address ? '   |   Address: ' + c.address : ''}`], [`Phones: ${phones || '-'}`],
+            [`Route days: ${days || 'No day'}   |   Score: ${scoreTxt}${c.prior?.note ? '   |   Starting score note: ' + c.prior.note : ''}`], ...(c.ban ? [[`Flag: ${c.ban.byName || ''}: ${c.ban.reason}`]] : []),
+            [`Balance due: ${due}   |   Last paid: ${lp ? fmtDate(lp) : '-'}`], [`Seller: ${bk.name}   |   Printed: ${fmtDate(today())}`], []];
           for (const a of accs) {
             rows.push([`Account: ${a.name} (${a.frequency})${a.status === 'closed' ? ' — closed' : ''}`, '', '', '', '', '', `Balance: ${L.round2(a.balance || 0)}`]);
             rows.push(['Date', 'Type', 'Details', 'Mode', 'Debit (+)', 'Credit (−)', 'Balance']);
@@ -2861,14 +2880,14 @@ function renderRecords() {
           const ws = X.utils.aoa_to_sheet(rows);
           ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 34 }, { wch: 7 }, { wch: 11 }, { wch: 11 }, { wch: 12 }];
           sheets.push([name, ws]);
-        }
+        });
       }
       const sws = X.utils.json_to_sheet(summary.length ? summary : [{ Customer: '—' }]);
-      sws['!cols'] = [{ wch: 12 }, { wch: 24 }, { wch: 9 }, { wch: 18 }, { wch: 13 }, { wch: 9 }, { wch: 12 }, { wch: 24 }];
+      sws['!cols'] = [{ wch: 12 }, { wch: 9 }, { wch: 5 }, { wch: 22 }, { wch: 10 }, { wch: 18 }, { wch: 20 }, { wch: 30 }, { wch: 12 }, { wch: 11 }, { wch: 20 }, { wch: 20 }, { wch: 8 }, { wch: 11 }, { wch: 11 }, { wch: 22 }];
       X.utils.book_append_sheet(wb, sws, 'Summary');
       sheets.forEach(([n, ws]) => X.utils.book_append_sheet(wb, ws, n));
-      const who = books.length === 1 ? books[0].name : 'all';
-      $('#stS').textContent = `${summary.length} ${t('customers')}`;
+      const who = (books.length === 1 ? books[0].name : 'all') + (dayPick === 'all' ? '' : '-' + (dayPick === 'none' ? 'noday' : DAY_EN[dayPick]));
+      $('#stS').textContent = `${sheets.length} ${t('customers')}`;
       await shareOrSave(new Blob([X.write(wb, { bookType: 'xlsx', type: 'array' })]), `statements-${who}-${today()}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (err) { if (err.name !== 'AbortError') toast(t('Could not make the file') + ': ' + err.message, true); }
     finally { btn.disabled = false; }
