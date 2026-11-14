@@ -903,9 +903,11 @@ function renderCustomers() {
     const due = list.reduce((s, c) => s + openBalance(c.id), 0);
     const np = byRoute ? list.filter((c) => pausedCust(c.id)).length : 0;
     const counted = byRoute ? list.filter((c) => !pausedCust(c.id)) : list;
+    // to visit today: active customers with a balance who are due (a monthly account already paid this month is not); anyone paid or seen today still counts
+    const toVisit = byRoute ? counted.filter((c) => paidToday.has(c.id) || visitedToday.has(c.id) || (openBalance(c.id) > 0 && !notDueUntil(c.id))).length : 0;
     const partC = counted.filter((c) => payState(c.id, paidToday, paidAccToday)?.full === false).length;
     const seenC = counted.filter((c) => paidToday.has(c.id)).length - partC, nvC = counted.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
-    $('#ctotal').textContent = `${list.length - np} ${t('customers')}${np ? ` (+ ⏸ ${np})` : ''} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seenC} ${t('paid today')}${partC ? ` · ✓½ ${partC}` : ''}${nvC ? ` · ⊘ ${nvC}` : ''}` : ''}`;
+    $('#ctotal').textContent = `${list.length - np} ${t('customers')}${np ? ` (+ ⏸ ${np})` : ''} · ${t('Total due')} ${money(due)}${byRoute ? ` · 🏠 ${toVisit} ${t('to visit')} · ✓ ${seenC} ${t('paid today')}${partC ? ` · ✓½ ${partC}` : ''}${nvC ? ` · ⊘ ${nvC}` : ''}` : ''}`;
     if (canArrange) bindHoldDrag(dayOfFilter(), sections.length > 1 && tm ? new Set(tm.list.map((c) => c.id)) : null);
   };
   // Hold a row for a second, then drag it to a new place in the route; saved at once, with an undo button.
