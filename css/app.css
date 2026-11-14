@@ -505,3 +505,6 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .rvcard .row { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
 .rvcard .x { background: none; border: 0; color: var(--muted); font-size: 20px; padding: 0 4px; width: auto; }
 .ledger .rsend { display: inline-block; margin-top: 4px; padding: 4px 10px; font-size: 12px; width: auto; }
+/* paid in some accounts only */
+.tick.part { color: #C77700; font-size: .95em; -webkit-text-stroke: 0; white-space: nowrap; }
+.dots i.part { background: linear-gradient(90deg, var(--accent) 50%, var(--dot) 50%); }

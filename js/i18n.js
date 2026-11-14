@@ -16,6 +16,7 @@ const ML = {
   'Written off': 'എഴുതിത്തള്ളി',
   'Recovered after write-off': 'എഴുതിത്തള്ളിയ ശേഷം കിട്ടിയത്',
   'File ready': 'ഫയൽ തയ്യാർ',
+  'Paid in some accounts only': 'ചില അക്കൗണ്ടിൽ മാത്രം കിട്ടി',
   'Only the admin can change the opening balance 30 days after the account was opened.': 'അക്കൗണ്ട് തുടങ്ങി 30 ദിവസം കഴിഞ്ഞാൽ ഓപ്പണിങ് ബാലൻസ് admin-ന് മാത്രമേ മാറ്റാൻ പറ്റൂ.',
   'Revisit today': 'ഇന്ന് വീണ്ടും പോകണം',
   'Revisit planned ✓': 'വീണ്ടും പോകാൻ വെച്ചു ✓',

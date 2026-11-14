@@ -407,7 +407,7 @@ async function renderHome() {
       <a class="stat" href="#/expenses"><span>${t('Cash in hand')} ›</span><b>${money(fig.cashInHand)}</b><small>${t('Expenses')} ${money(fig.expense)}${fig.scrapBought ? ` · ♻️ ${money(fig.scrapBought)}` : ''}</small></a>
     </div>
     ${alerts.map(alertCard).join('')}
-    ${routeTile(new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), new Set(visits.map((v) => v.customerId)))}
+    ${routeTile(new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)), new Set(visits.map((v) => v.customerId)), paidAccsOf(cols))}
     ${(() => { const paidSet = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
       const rv = Object.values(S.customers).filter((c) => revisitOpen(c, paidSet, visits)).sort((a, b) => a.revisit.at - b.revisit.at);
       return rv.length ? `<div class="card rvcard"><b>🔁 ${t('Revisit today')} (${rv.length})</b><ul class="list">${rv.map((c) => `<li class="row"><a href="#/customer/${c.id}" style="flex:1;text-decoration:none;color:inherit"><b>${esc(c.name)}</b><small>${esc(placeOf(c))}</small></a><span class="amt">${money(openBalance(c.id))}</span><button class="x" data-rvx="${c.id}" title="${t('Remove')}">×</button></li>`).join('')}</ul></div>` : ''; })()}
@@ -456,7 +456,7 @@ function todayRouteList(plan = todayPlan()) {
   return groups;
 }
 
-function routeTile(paid, visited) {
+function routeTile(paid, visited, paidAcc = new Set()) {
   const plan = todayPlan();
   const changeNote = plan.change ? (plan.change.action === 'cancel'
     ? `${dayLabel(plan.change.day)} ${t('route cancelled today')}${plan.change.events ? ` (${esc(plan.change.events)})` : ''}`
@@ -471,7 +471,7 @@ function routeTile(paid, visited) {
   return `<button class="routetile" id="routeTile">
     <div class="rt-h"><span>🛵 ${t("Today's route")} · ${label}</span><em>${t('Open')}</em></div>
     <b>${done} / ${all.length} ${t('customers')}</b>
-    <div class="dots">${all.map((c) => `<i class="${paid.has(c.id) ? 'paid' : visited.has(c.id) ? 'visit' : ''}"></i>`).join('')}</div>
+    <div class="dots">${all.map((c) => { const st = payState(c.id, paid, paidAcc); return `<i class="${st ? (st.full ? 'paid' : 'part') : visited.has(c.id) ? 'visit' : ''}"></i>`; }).join('')}</div>
     <small>${t('Total due')} ${money(due)}${changeNote ? ' · ' + changeNote : ''}</small></button>`;
 }
 
@@ -844,12 +844,12 @@ function renderCustomers() {
   const sid = S.sid;
   // On a route day the list always opens on Today; other days it opens on the tab chosen last (or All).
   let filter = todayPlan().days.length ? 'today' : (() => { try { return sessionStorage.getItem('custDay') || 'all'; } catch { return 'all'; } })();
-  let paidToday = new Set(), visitedToday = new Set(), lastAct = '';
+  let paidToday = new Set(), paidAccToday = new Set(), visitedToday = new Set(), lastAct = '';
   const loadPaid = async () => {
     const [cols, vis] = await Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', today()))),
       F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', today())))]);
     lastAct = lastActivity(cols, vis);
-    paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
+    paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)); paidAccToday = paidAccsOf(cols);
     visitedToday = new Set(vis.map((v) => v.customerId)); todayVisits = vis;
     await loadPromises(sid);
     draw();
@@ -890,12 +890,12 @@ function renderCustomers() {
         n++;
         const lane = (c.lane || '').trim(), head = byRoute && lane.toLowerCase() !== lastLane ? `<li class="lanehead">${esc(lane || t('No lane'))}</li>` : '';
         lastLane = lane.toLowerCase();
-        const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), paid = paidToday.has(c.id), nopay = !paid && visitedToday.has(c.id);
+        const accs = accountsOf(c.id).filter((a) => a.status !== 'closed'), st = payState(c.id, paidToday, paidAccToday), paid = !!st?.full, nopay = !st && visitedToday.has(c.id);
         const days = daysOf(c).map(dayLabel).join(' ');
-        const dm = byRoute ? dueMark(c.id, paid) : '';
-        const dim = dm || (byRoute && !paid && pausedCust(c.id)); // not due yet, or ⏸ inactive: shown faded so nobody goes there by mistake
+        const dm = byRoute ? dueMark(c.id, !!st) : '';
+        const dim = dm || (byRoute && !st && pausedCust(c.id)); // not due yet, or ⏸ inactive: shown faded so nobody goes there by mistake
         return `${head}<li><a href="#/customer/${c.id}" data-cid="${c.id}" class="row ${paid ? 'paid' : ''} ${dim ? 'notdue' : ''}">
-          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${paid ? '<span class="tick">✓</span> ' : nopay ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : ''}${revisitMark(c, paidToday)}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
+          <div>${placeBadge(c)}<b>${byRoute ? `<span class="seq">${n}</span>` : ''}${st ? tickMark(st) : nopay ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : ''}${revisitMark(c, paidToday)}${pauseMark(c.id)}${esc(c.name)}</b>${scoreBadges(c)}${dm}${promiseMark(c.id)}<small>${[esc(c.phone || ''), `${accs.length} ${t('accounts')}`, days].filter(Boolean).join(' · ')}</small></div>
           <div class="amt">${money(openBalance(c.id))}</div></a></li>`;
       }).join('');
     }).join('') || `<li class="muted">${t('No customers here')}</li>`;
@@ -903,8 +903,9 @@ function renderCustomers() {
     const due = list.reduce((s, c) => s + openBalance(c.id), 0);
     const np = byRoute ? list.filter((c) => pausedCust(c.id)).length : 0;
     const counted = byRoute ? list.filter((c) => !pausedCust(c.id)) : list;
-    const seenC = counted.filter((c) => paidToday.has(c.id)).length, nvC = counted.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
-    $('#ctotal').textContent = `${list.length - np} ${t('customers')}${np ? ` (+ ⏸ ${np})` : ''} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seenC} ${t('paid today')}${nvC ? ` · ⊘ ${nvC}` : ''}` : ''}`;
+    const partC = counted.filter((c) => payState(c.id, paidToday, paidAccToday)?.full === false).length;
+    const seenC = counted.filter((c) => paidToday.has(c.id)).length - partC, nvC = counted.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
+    $('#ctotal').textContent = `${list.length - np} ${t('customers')}${np ? ` (+ ⏸ ${np})` : ''} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seenC} ${t('paid today')}${partC ? ` · ✓½ ${partC}` : ''}${nvC ? ` · ⊘ ${nvC}` : ''}` : ''}`;
     if (canArrange) bindHoldDrag(dayOfFilter(), sections.length > 1 && tm ? new Set(tm.list.map((c) => c.id)) : null);
   };
   // Hold a row for a second, then drag it to a new place in the route; saved at once, with an undo button.
@@ -1086,6 +1087,19 @@ function nextDueOf(a) {
   return base ? addMonth(base) : '';
 }
 /** Earliest next due date when every open account of the customer is monthly and not due yet; '' otherwise. */
+/**
+ * How much of today's payment a customer has made: '' none, { full: true } every due account paid today,
+ * or { full: false, got, of } only some. Due accounts: open with a balance, not ⏸ inactive and not "not due yet"
+ * (a monthly account already paid this month); an account paid today always counts.
+ */
+function payState(cid, paidCust, paidAcc) {
+  if (!paidCust.has(cid)) return '';
+  const due = accountsOf(cid).filter((a) => paidAcc.has(a.id) || (a.status !== 'closed' && a.balance > 0 && !a.inactive && (() => { const d = nextDueOf(a); return !d || d <= today(); })()));
+  const got = due.filter((a) => paidAcc.has(a.id)).length;
+  return !due.length || got >= due.length ? { full: true } : { full: false, got, of: due.length };
+}
+const paidAccsOf = (cols) => new Set(cols.filter((c) => c.kind !== 'discount' && c.accountId).map((c) => c.accountId));
+const tickMark = (st) => (st ? (st.full ? '<span class="tick">✓</span> ' : `<span class="tick part" title="${t('Paid in some accounts only')}">✓ ${st.got}/${st.of}</span> `) : '');
 function notDueUntil(cid) {
   const accs = accountsOf(cid).filter((a) => a.status !== 'closed' && a.balance > 0 && !a.inactive);
   if (!accs.length) return '';
@@ -1529,7 +1543,7 @@ function renderPick(action) {
   setTitle(action === 'sale' ? t('New sale') : action === 'order' ? t('New order') : t('Collection'), action === 'order' ? '#/orders' : '#/home');
   if (needSeller()) return;
   try { sessionStorage.setItem('afterNewCustomer', action === 'order' ? 'order' : ''); } catch {}
-  let paidToday = new Set(), visitedToday = new Set(), lastAct = '';
+  let paidToday = new Set(), paidAccToday = new Set(), visitedToday = new Set(), lastAct = '';
   const draw = () => {
     const qv = ($('#q')?.value || '').toLowerCase();
     // No search: today's route first in the same order as Customers → Today (arranged order, then lane / house no.),
@@ -1546,15 +1560,16 @@ function renderPick(action) {
       if (rest.length) sections.push({ head: t('Others'), cls: '', route: false, list: rest });
     } else sections.push({ head: '', cls: '', route: false, list: all.filter((c) => searchHit(c, qv)).sort(byName) });
     let n = 0;
-    const mark = (c) => (paidToday.has(c.id) ? '<span class="tick">✓</span> ' : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : '');
-    const name = (c, seq, dm = '') => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c)}${revisitMark(c, paidToday)}${pauseMark(c.id)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
+    // one row per account: ✓ on the account paid today; the customer's other accounts show nothing yet
+    const mark = (c, a) => (a && paidToday.has(c.id) ? (paidAccToday.has(a.id) ? '<span class="tick">✓</span> ' : '') : paidToday.has(c.id) ? tickMark(payState(c.id, paidToday, paidAccToday)) : visitedToday.has(c.id) ? `<span class="nopay" title="${t('Visited / contacted – no payment')}">×</span> ` : '');
+    const name = (c, seq, dm = '', a = null) => `${placeBadge(c)}<b>${seq ? `<span class="seq">${seq}</span>` : ''}${mark(c, a)}${revisitMark(c, paidToday)}${pauseMark(c.id)}${esc(c.name)}</b>${dm}${promiseMark(c.id)}`;
     const html = sections.map((sec) => {
       const rows = sec.list.map((c) => {
         const seq = sec.route ? ++n : 0, dm = sec.route ? dueMark(c.id, paidToday.has(c.id)) : '', faded = dm || (sec.route && !paidToday.has(c.id) && pausedCust(c.id));
-        const paid = (paidToday.has(c.id) ? 'paid' : '') + (faded ? ' notdue' : '');
+        const paid = (payState(c.id, paidToday, paidAccToday)?.full ? 'paid' : '') + (faded ? ' notdue' : '');
         if (action === 'order') return `<li><a class="row ${paid}" data-cid="${c.id}" data-pick-order="${c.id}" href="#/order/${c.id}"><div>${name(c, seq, dm)}<small>${[esc(c.phone || ''), daysOf(c).map(dayLabel).join(' ')].filter(Boolean).join(' · ')}</small></div><div class="amt">${money(openBalance(c.id))}</div></a></li>`;
         return accountsOf(c.id).filter((a) => a.status !== 'closed').map((a, i) =>
-          `<li><a class="row ${paid}" data-cid="${c.id}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq, i ? '' : dm)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${shortDate(nextDueOf(a))}` : ''}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
+          `<li><a class="row ${paidAccToday.has(a.id) ? 'paid' : ''} ${faded ? 'notdue' : ''}" data-cid="${c.id}" href="#/${action}/${c.id}/${a.id}"><div>${name(c, i ? 0 : seq, i ? '' : dm, a)}<small>${esc(a.name)} · ${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${shortDate(nextDueOf(a))}` : ''}</small></div><div class="amt">${money(a.balance)}</div></a></li>`).join('');
       }).join('');
       return rows ? (sec.head ? `<li class="lanehead ${sec.cls}">${esc(sec.head)}</li>` : '') + rows : '';
     }).join('');
@@ -1568,7 +1583,7 @@ function renderPick(action) {
   Promise.all([F.fetchAll(F.query(F.sellerCol(sid, 'collections'), F.where('date', '==', today()))),
     F.fetchAll(F.query(F.sellerCol(sid, 'visits'), F.where('date', '==', today())))]).then(([cols, vis]) => {
     if (!$('#plist')) return; // left the page already
-    paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId));
+    paidToday = new Set(cols.filter((c) => c.kind !== 'discount').map((c) => c.customerId)); paidAccToday = paidAccsOf(cols);
     visitedToday = new Set(vis.map((v) => v.customerId)); todayVisits = vis;
     lastAct = lastActivity(cols, vis);
     return loadPromises(sid);
