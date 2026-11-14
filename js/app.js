@@ -1621,8 +1621,16 @@ function setActive(a, active) {
  * Every entry of the account is replayed in order with the new opening, so the open items, each collection's
  * allocations and realised profit stay right. Only the balance moves, by the difference.
  */
+/** A seller may set or correct the opening balance for 30 days after the account was opened; after that only the admin. */
+const OPENING_EDIT_DAYS = 30;
+function openingLocked(a) {
+  if (isAdmin()) return false;
+  const opened = a.date || (a.createdAt ? new Date(a.createdAt + 330 * 60000).toISOString().slice(0, 10) : today());
+  return daysBetween(opened, today()) > OPENING_EDIT_DAYS;
+}
 async function editOpening(sid, cid, aid) {
   const a = S.accounts[aid]; if (!a) return false;
+  if (openingLocked(a)) { toast(t('Only the admin can change the opening balance 30 days after the account was opened.'), true); return false; }
   if (!navigator.onLine) { toast(t('Needs internet, so that every entry of this account is loaded.'), true); return false; }
   const old = L.round2(Number(a.openingBalance) || 0);
   const v = prompt(`${t('Opening balance (old book)')}
@@ -1716,7 +1724,7 @@ async function renderAccount(cid, aid) {
         <button class="btn small" id="rcX">${t('Close')}</button></div></div>` : ''}
       <div class="card balance"><span>${t('Balance due')}</span><b>${money(a.balance)}</b>
         <small>${freqLabel(a.frequency)}${nextDueOf(a) ? ` · ${t('Next due')} ${fmtDate(nextDueOf(a))}` : ''}${a.status === 'closed' ? ' · ' + t('Closed') : a.inactive ? ' · ⏸ ' + t('Inactive') + (a.inactiveSince ? ' ' + t('since') + ' ' + fmtDate(a.inactiveSince) : '') : ''}</small>
-        <button class="linkbtn obal" id="obal">${Number(a.openingBalance) > 0 ? `${t('Opening balance')}: ${money(a.openingBalance)} ✏️` : `+ ${t('Opening balance')}`}</button></div>
+        <button class="linkbtn obal" id="obal">${Number(a.openingBalance) > 0 ? `${t('Opening balance')}: ${money(a.openingBalance)} ${openingLocked(a) ? '🔒' : '✏️'}` : openingLocked(a) ? '' : `+ ${t('Opening balance')}`}</button></div>
       <div class="grid2 acctiles" ${a.writtenOff ? 'hidden' : ''}>
         <a class="tile primary" href="#/collect/${cid}/${aid}">${t('Collection')}</a>
         <a class="tile" href="#/sale/${cid}/${aid}">${t('New sale')}</a>
@@ -1760,7 +1768,7 @@ async function renderAccount(cid, aid) {
 
     const stmtText = () => {
       const lines = ledger.slice(-25).map((r) => `${fmtDate(r.date) || '-'}  ${typeLabel(r)}${r.type === 'collection' || r.type === 'advance' ? ' (' + modeLabel(r.ref.mode) + ')' : ''}  ${r.sign > 0 ? '+' : '-'}${money(r.amount)}`);
-      return `*${APP_NAME}*\n${c.name} — ${a.name}\n${t('Date')}: ${fmtDate(today())}\n\n${lines.join('\n')}\n\n*${t('Balance due')}: ${money(a.balance)}*`;
+      return `*${APP_NAME}*\n\n${c.name} — ${a.name}\n${t('Date')}: ${fmtDate(today())}\n\n${lines.join('\n')}\n\n*${t('Balance due')}: ${money(a.balance)}*`;
     };
     const tg = $('#actTgl');
     if (tg) tg.onclick = () => {
@@ -2099,9 +2107,10 @@ function renderCollect(cid, aid) {
     b.update(F.sellerDoc(sid, 'accounts', aid), { queue, balance: F.increment(-L.round2(amt + disc)), ...(amt > 0 && date > (a.lastPaid || '') ? { lastPaid: date } : {}), ...(closeIt ? { status: 'closed', closedOn: today(), ...setActive(a, true) } : {}) });
     F.commit(b, onWriteError);
     rescoreSoon(cid);
-    const text = [`*${APP_NAME}*`, `${c.name} — ${a.name}`,
-      amt > 0 ? `${money(amt)} ${t('received')} (${fmtDate(date)}, ${modeLabel(mode)}${mode === 'scrap' ? ': ' + scrapDetail(doc) : ''}).` : '',
-      disc > 0 ? `${t('Discount')}: ${money(disc)}` : '', `${t('Balance')}: *${money(bal)}*`, t('Thank you')].filter(Boolean).join('\n');
+    // heading, an empty line, the details, an empty line, thank you
+    const text = [`*${APP_NAME}*`, '', `${c.name} — ${a.name}`,
+      amt > 0 ? `${money(amt)} ${t('received')} (${fmtDate(date)}, ${modeLabel(mode)}${mode === 'scrap' ? ': ' + scrapDetail(doc) : ''}).` : null,
+      disc > 0 ? `${t('Discount')}: ${money(disc)}` : null, `${t('Balance')}: *${money(bal)}*`, '', t('Thank you')].filter((x) => x != null).join('\n');
     try { sessionStorage.setItem('receipt', JSON.stringify({ aid, customer: c.name, amount: amt, discount: disc, balance: bal, phone: c.phone || '', text, at: Date.now() })); } catch {}
     go(takeCollectBack(aid) || `#/account/${cid}/${aid}`);
   };
@@ -2115,10 +2124,10 @@ const cashItems = (s) => s.items.map((i) => `${i.name} × ${i.qty}${i.returned ?
 const payTotals = (pays) => pays.filter((p) => p.amount > 0).map((p) => `${modeLabel(p.mode)} ${money(p.amount)}`).join(' · ');
 const last10 = (p) => String(p || '').replace(/\D/g, '').slice(-10);
 function cashReceiptText(sale, pays) {
-  return [`*${APP_NAME}*`, `🛒 ${t('Cash sale')} · ${fmtDate(sale.date)}`, sale.buyerName || '', '',
+  return [`*${APP_NAME}*`, '', `🛒 ${t('Cash sale')} · ${fmtDate(sale.date)}`, sale.buyerName || '', '',
     ...sale.items.map((i) => `${i.name} × ${i.qty} — ${money((i.listPrice ?? i.price) * i.qty)}`), '',
     ...(sale.saleDiscount ? [`${t('Discount')}: − ${money(sale.saleDiscount)}`] : []),
-    `*${t('Total')}: ${money(sale.saleValue)}*`, `${t('Paid')}: ${payTotals(pays)}`, t('Thank you')].filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n');
+    `*${t('Total')}: ${money(sale.saleValue)}*`, `${t('Paid')}: ${payTotals(pays)}`, '', t('Thank you')].filter((x, i, a) => x !== '' || a[i - 1] !== '').join('\n');
 }
 
 /** Write a cash sale (paid in full) into the batch. Returns the sale id. */
