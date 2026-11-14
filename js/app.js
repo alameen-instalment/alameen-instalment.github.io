@@ -1671,7 +1671,16 @@ async function loadAccountData(sid, aid) {
 }
 
 const typeLabel = (r) => ({ opening: t('Opening balance'), sale: t('Sale'), advance: t('Advance'), collection: t('Collection'), return: t('Return'), discount: t('Discount'), writeoff: '✖ ' + t('Written off'), recovery: t('Recovered after write-off') }[r.type]);
-const rowDetail = (r) => r.type === 'sale' ? r.ref.items.map((i) => `${i.name} × ${i.qty}`).join(', ') + (r.ref.saleDiscount ? ` (${t('Discount')} ${rmoney(r.ref.saleDiscount)})` : '')
+/** Items of a sale with their prices: "Mixie × 1 — ₹2,500", "Fan × 2 @ ₹1,200 — ₹2,400"; a discounted line shows "₹2,500 → ₹2,400". */
+function itemsWithPrices(items, fmt = rmoney, times = '×', sep = ', ') {
+  return (items || []).map((i) => {
+    const q = Number(i.qty) || 0, p = Number(i.price) || 0, lp = i.listPrice != null && Math.abs(i.listPrice - p) > 0.004 ? Number(i.listPrice) : null;
+    const unit = q > 1 ? ` @ ${lp != null ? fmt(lp) + ' → ' : ''}${fmt(p)}` : '';
+    const total = q > 1 || lp == null ? fmt(p * q) : `${fmt(lp)} → ${fmt(p)}`;
+    return `${i.name} ${times} ${q}${unit} — ${total}`;
+  }).join(sep);
+}
+const rowDetail = (r) => r.type === 'sale' ? itemsWithPrices(r.ref.items) + (r.ref.saleDiscount ? ` (${t('Discount')} ${rmoney(r.ref.saleDiscount)})` : '')
   : r.type === 'return' ? r.ref.items.map((i) => `${i.name} × ${i.qty}`).join(', ')
   : r.type === 'collection' || r.type === 'advance' || r.type === 'recovery' ? [modeLabel(r.ref.mode), scrapDetail(r.ref), r.ref.note].filter(Boolean).join(' · ') : r.type === 'discount' || r.type === 'writeoff' ? r.ref.note || r.ref.reason || '' : '';
 
@@ -1811,7 +1820,7 @@ async function renderAccount(cid, aid) {
     $('#pdfStmt').onclick = () => makePdf({
       title: `Statement - ${c.name} (${a.name})`, subtitle: `${c.phone || ''}  |  ${fmtDate(today())}`,
       head: ['Date', 'Details', 'Debit', 'Credit', 'Balance'],
-      rows: ledger.map((r) => [fmtDate(r.date), `${({ opening: 'Opening balance', sale: 'Sale', advance: 'Advance', collection: 'Collection', return: 'Return', discount: 'Discount' })[r.type]} ${r.type === 'collection' || r.type === 'advance' ? [MODE_EN[r.ref.mode] || 'Cash', (r.ref.scrapItems || []).map((i) => `${i.type} ${i.value}`).join(', '), r.ref.note].filter(Boolean).join(' ') : rowDetail(r)}`.slice(0, 60), r.sign > 0 ? pdfMoney(r.amount) : '', r.sign < 0 ? pdfMoney(r.amount) : '', pdfMoney(r.balance)]),
+      rows: ledger.map((r) => [fmtDate(r.date), `${({ opening: 'Opening balance', sale: 'Sale', advance: 'Advance', collection: 'Collection', return: 'Return', discount: 'Discount' })[r.type]} ${r.type === 'collection' || r.type === 'advance' ? [MODE_EN[r.ref.mode] || 'Cash', (r.ref.scrapItems || []).map((i) => `${i.type} ${i.value}`).join(', '), r.ref.note].filter(Boolean).join(' ') : r.type === 'sale' ? itemsWithPrices(r.ref.items, pdfMoney, 'x', '\n').replace(/→/g, '->') + (r.ref.saleDiscount ? ` (Discount ${pdfMoney(r.ref.saleDiscount)})` : '') : rowDetail(r)}`.slice(0, r.type === 'sale' ? 400 : 60), r.sign > 0 ? pdfMoney(r.amount) : '', r.sign < 0 ? pdfMoney(r.amount) : '', pdfMoney(r.balance)]),
       foot: [`Balance due: ${pdfMoney(a.balance)}`],
       file: `statement-${c.name}-${a.name}.pdf`,
     });
@@ -2777,11 +2786,14 @@ async function makePdf({ title, subtitle, head, rows, foot = [], file }) {
     const colW = (W - 2 * M) / head.length;
     const widths = head.length === 5 ? [60, W - 2 * M - 60 - 3 * 80, 80, 80, 80] : head.map(() => colW);
     const drawRow = (cells, bold) => {
-      if (y > H - M) { doc.addPage(); y = M; }
       doc.setFont('helvetica', bold ? 'bold' : 'normal');
+      // the details column wraps onto more lines (a sale with several items and prices); other columns stay on one line
+      const parts = cells.map((c, i) => { const l = doc.splitTextToSize(String(c ?? ''), widths[i] - 6); return head.length === 5 && i === 1 ? l : [l[0] || '']; });
+      const lines = Math.max(1, ...parts.map((l) => l.length));
+      if (y + (lines - 1) * 11 > H - M) { doc.addPage(); y = M; }
       let x = M;
-      cells.forEach((c, i) => { const s = doc.splitTextToSize(String(c ?? ''), widths[i] - 6)[0] || ''; doc.text(s, i === 0 || (head.length === 5 && i === 1) ? x + 2 : x + widths[i] - 4, y, { align: i === 0 || (head.length === 5 && i === 1) ? 'left' : 'right' }); x += widths[i]; });
-      y += 15;
+      parts.forEach((l, i) => { const left = i === 0 || (head.length === 5 && i === 1); l.forEach((s, k) => doc.text(s, left ? x + 2 : x + widths[i] - 4, y + k * 11, { align: left ? 'left' : 'right' })); x += widths[i]; });
+      y += 15 + (lines - 1) * 11;
       doc.setDrawColor(220); doc.line(M, y - 11, W - M, y - 11);
     };
     drawRow(head, true);
@@ -2895,7 +2907,7 @@ function renderRecords() {
             rows.push(['Date', 'Type', 'Details', 'Mode', 'Debit (+)', 'Credit (−)', 'Balance']);
             const led = L.buildLedger(a.openingBalance, d.sales.filter((x) => x.accountId === a.id), d.collections.filter((x) => x.accountId === a.id), d.returns.filter((x) => x.accountId === a.id));
             for (const r of led) {
-              const det = r.type === 'sale' || r.type === 'return' ? r.ref.items.map((i) => `${i.name} x${i.qty}`).join(', ') : [(r.ref?.scrapItems || []).map((i) => `${i.type} ${i.value}`).join(', '), r.ref?.note].filter(Boolean).join(' · ');
+              const det = r.type === 'sale' ? itemsWithPrices(r.ref.items, (n) => String(L.round2(n)), 'x') : r.type === 'return' ? r.ref.items.map((i) => `${i.name} x${i.qty}`).join(', ') : [(r.ref?.scrapItems || []).map((i) => `${i.type} ${i.value}`).join(', '), r.ref?.note].filter(Boolean).join(' · ');
               const mode = r.type === 'collection' || r.type === 'advance' ? MODE_EN[r.ref.mode] || 'Cash' : '';
               rows.push([fmtDate(r.date) || '-', typeName[r.type], det, mode, r.sign > 0 ? r.amount : '', r.sign < 0 ? r.amount : '', r.balance]);
             }
