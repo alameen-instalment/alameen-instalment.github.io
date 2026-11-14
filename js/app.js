@@ -855,7 +855,9 @@ function renderCustomers() {
     draw();
   };
   let arranging = null; // array of customer ids while arranging the route order
-  const dayOfFilter = () => (filter === 'today' ? (todayPlan().days[0]?.day ?? todayDay()) : Number(filter));
+  // Today's own route group (not a route moved here, not the promised-to-pay list): the part of the Today tab that can be arranged.
+  const todayMain = () => { const gs = todayRouteList(todayPlan()); return gs.find((g) => !g.moved) || gs[0] || null; };
+  const dayOfFilter = () => (filter === 'today' ? (todayMain()?.day ?? todayPlan().days[0]?.day ?? todayDay()) : Number(filter));
   const matches = (c, f) => f === 'all' ? true : f === 'none' ? !daysOf(c).length : f === 'today' ? onTodayRoute(c) : daysOf(c).includes(Number(f));
   const draw = () => {
     if (arranging) return;
@@ -877,7 +879,9 @@ function renderCustomers() {
       ? todayRouteList(plan).map((g) => ({ head: g.moved ? `↩ ${dayLabel(g.day)} ${t('route (moved)')}` : '', list: g.list.filter((c) => ids.has(c.id)) }))
       : [{ head: '', list: byRoute ? L.routeSort(list, dayOfFilter()) : list.sort((a, b) => a.name.localeCompare(b.name)) }];
     if (filter === 'today' && !qv && promT.length) sections.unshift({ head: `📅 ${t('Promised to pay today')}`, list: promT });
-    $('#arrBar').hidden = !byRoute || !!qv || sections.length > 1;
+    const tm = filter === 'today' ? todayMain() : null;
+    const canArrange = byRoute && !qv && (filter === 'today' ? !!tm && tm.list.length > 1 : sections.length === 1);
+    $('#arrBar').hidden = !canArrange;
     let n = 0;
     const note = filter === 'today' && plan.change ? `<li class="banner warn">${plan.change.action === 'cancel' ? `${dayLabel(plan.change.day)} ${t('route cancelled today')}` : `${dayLabel(plan.change.day)} ${t('route moved to')} ${fmtDate(plan.change.toDate)}`}</li>` : '';
     $('#clist').innerHTML = note + sections.map((sec) => {
@@ -901,14 +905,17 @@ function renderCustomers() {
     const counted = byRoute ? list.filter((c) => !pausedCust(c.id)) : list;
     const seenC = counted.filter((c) => paidToday.has(c.id)).length, nvC = counted.filter((c) => !paidToday.has(c.id) && visitedToday.has(c.id)).length;
     $('#ctotal').textContent = `${list.length - np} ${t('customers')}${np ? ` (+ ⏸ ${np})` : ''} · ${t('Total due')} ${money(due)}${byRoute ? ` · ✓ ${seenC} ${t('paid today')}${nvC ? ` · ⊘ ${nvC}` : ''}` : ''}`;
-    if (byRoute && !qv && sections.length === 1) bindHoldDrag(dayOfFilter());
+    if (canArrange) bindHoldDrag(dayOfFilter(), sections.length > 1 && tm ? new Set(tm.list.map((c) => c.id)) : null);
   };
   // Hold a row for a second, then drag it to a new place in the route; saved at once, with an undo button.
   let suppressClick = false;
-  const bindHoldDrag = (day) => {
+  // allowed: when the Today tab also shows other lists (promised to pay today, a moved route), only today's own route rows move, among themselves
+  const bindHoldDrag = (day, allowed = null) => {
     const ul = $('#clist');
     ul.classList.add('holdable');
-    $$('#clist > li > a.row').forEach((a) => {
+    const ok = (a) => !allowed || allowed.has(a.dataset.cid);
+    const rowsNow = () => $$('#clist > li > a.row').filter(ok);
+    rowsNow().forEach((a) => {
       a.oncontextmenu = (e) => e.preventDefault();
       a.draggable = false; a.ondragstart = (e) => e.preventDefault();
       a.onpointerdown = (e) => {
@@ -926,14 +933,14 @@ function renderCustomers() {
           stopWait(); active = true; suppressClick = true;
           try { navigator.vibrate?.(35); } catch {}
           li.classList.add('dragging'); ul.classList.add('dragmode');
-          const before = $$('#clist > li > a.row').map((x) => x.dataset.cid);
+          const before = rowsNow().map((x) => x.dataset.cid);
           const move = (ev) => { if (ev.pointerId !== pid) return; ev.preventDefault(); moveTo(ev.clientY); };
           moveTo = (y) => {
             clearInterval(scrollTimer);
             if (y < 90) scrollTimer = setInterval(() => window.scrollBy(0, -12), 16); else if (y > window.innerHeight - 140) scrollTimer = setInterval(() => window.scrollBy(0, 12), 16);
-            const others = $$('#clist > li').filter((x) => x !== li && x.querySelector('a.row'));
+            const others = rowsNow().map((x) => x.parentElement).filter((x) => x !== li);
             const nxt = others.find((x) => { const r = x.getBoundingClientRect(); return y < r.top + r.height / 2; });
-            if (nxt) { if (li.nextElementSibling !== nxt) ul.insertBefore(li, nxt); } else ul.appendChild(li);
+            if (nxt) { if (li.nextElementSibling !== nxt) ul.insertBefore(li, nxt); } else if (others.length) others.at(-1).after(li); else ul.appendChild(li);
           };
           const up = (ev) => { if (ev.pointerId !== pid || (ev.type === 'pointercancel' && touch)) return; finish(); };
           finish = () => {
@@ -942,7 +949,7 @@ function renderCustomers() {
             window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
             window.removeEventListener('touchmove', noScroll); window.removeEventListener('touchend', touchEnd); window.removeEventListener('touchcancel', touchEnd);
             setTimeout(() => { suppressClick = false; }, 400);
-            const after = $$('#clist > li > a.row').map((x) => x.dataset.cid);
+            const after = rowsNow().map((x) => x.dataset.cid);
             if (after.join() === before.join()) return draw();
             saveRouteOrder(day, after, before);
           };
@@ -1022,7 +1029,7 @@ function renderCustomers() {
   const endArrange = () => {
     arranging = null; $('#dayf').classList.remove('locked'); $('#q').disabled = false; $('#arrSave').hidden = true; draw();
   };
-  const currentIds = () => L.routeSort(Object.values(S.customers).filter((c) => matches(c, filter)), dayOfFilter()).map((c) => c.id);
+  const currentIds = () => (filter === 'today' ? L.routeSort(todayMain()?.list || [], dayOfFilter()) : L.routeSort(Object.values(S.customers).filter((c) => matches(c, filter)), dayOfFilter())).map((c) => c.id);
   $('#arrBtn').onclick = () => startArrange(currentIds());
   $('#autoBtn').onclick = async () => {
     const from = L.addDays(today(), -90);
