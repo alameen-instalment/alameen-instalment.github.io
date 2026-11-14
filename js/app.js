@@ -628,6 +628,12 @@ async function mountCalendar(el) {
 function readReceipt() {
   try { const r = JSON.parse(sessionStorage.getItem('receipt') || 'null'); return r && Date.now() - (r.at || 0) < 30 * 60000 ? r : null; } catch { return null; }
 }
+/** WhatsApp receipt for one payment: heading, an empty line, the details, an empty line, thank you. */
+function receiptText(c, a, { amount, date, mode, scrap = '', discount = 0, balance }) {
+  return [`*${APP_NAME}*`, '', `${c.name} — ${a.name}`,
+    amount > 0 ? `${money(amount)} ${t('received')} (${fmtDate(date)}, ${modeLabel(mode)}${scrap ? ': ' + scrap : ''}).` : null,
+    discount > 0 ? `${t('Discount')}: ${money(discount)}` : null, `${t('Balance')}: *${money(balance)}*`, '', t('Thank you')].filter((x) => x != null).join('\n');
+}
 function receiptBar(float = false) {
   const rc = readReceipt();
   if (!rc) return '';
@@ -1704,6 +1710,7 @@ async function renderAccount(cid, aid) {
     // Self-check: the open items must add up to the balance. If two phones edited this account offline at once,
     // rebuild the open items from the entries (balances are never changed by this).
     const ledgerBal = ledger.length ? ledger.at(-1).balance : L.round2(a.openingBalance || 0);
+    const lastPayRow = ledger.findLastIndex((r) => (r.type === 'collection' || r.type === 'advance') && r.amount > 0); // only the latest payment gets a receipt button
     if (navigator.onLine && !a.writtenOff && L.round2(ledgerBal) === L.round2(a.balance) && L.queueDue(a.queue) !== L.round2(Math.max(0, a.balance))) {
       const op = (a.queue || []).find((q) => q.ref === 'opening');
       const rp = L.replayAccount({ opening: a.openingBalance > 0 ? { amount: a.openingBalance, ratio: op?.ratio ?? L.legacyRatio(S.settings.legacyMarginPct) } : null, sales: data.sales, collections: data.collections, returns: data.returns });
@@ -1738,7 +1745,8 @@ async function renderAccount(cid, aid) {
       ${open.length ? `<h3>${t('Open sales')}</h3><ul class="list">${open.map((q) => { const s = saleById[q.ref]; return s ? `<li class="row"><div><b>${fmtDate(s.date)}</b><small>${esc(s.items.map((i) => i.name).join(', '))}</small></div><div class="amt">${money(q.remaining)}<small>${t('of')} ${money(s.saleValue - (s.creditedValue || 0))}</small></div></li>` : ''; }).join('')}</ul>` : ''}
       <h3>${t('Statement')}</h3>
       <table class="ledger"><thead><tr><th>${t('Date')}</th><th>${t('Details')}</th><th>+</th><th>−</th><th>${t('Balance')}</th></tr></thead><tbody>
-      ${ledger.map((r) => `<tr class="${r.type}"><td>${fmtDate(r.date)}</td><td>${typeLabel(r)}<small>${esc(rowDetail(r))}</small>
+      ${ledger.map((r, i) => `<tr class="${r.type}"><td>${fmtDate(r.date)}</td><td>${typeLabel(r)}<small>${esc(rowDetail(r))}</small>
+        ${i === lastPayRow ? `<a class="btn small wa rsend" target="_blank" rel="noopener" href="${L.waNumber(c.phone) ? `https://wa.me/${L.waNumber(c.phone)}` : 'https://wa.me/'}?text=${encodeURIComponent(receiptText(c, a, { amount: r.amount, date: r.date, mode: r.ref.mode, scrap: r.ref.mode === 'scrap' ? scrapDetail(r.ref) : '', balance: r.balance }))}">📩 ${t('Send receipt')}</a>` : ''}
         ${r.type === 'collection' || r.type === 'advance' || r.type === 'discount' || r.type === 'recovery' ? `<button class="x" data-del="${r.ref.id}" title="${t('Delete')}">×</button>` : ''}
         ${r.type === 'sale' && isAdmin() ? `<button class="void" data-void="${r.ref.id}">${t('Void')}</button>` : ''}</td>
         <td>${r.sign > 0 ? money(r.amount) : ''}</td><td>${r.sign < 0 ? money(r.amount) : r.sign === 0 ? `<small>(${money(r.amount)})</small>` : ''}</td><td>${money(r.balance)}</td></tr>`).join('')}
@@ -2108,9 +2116,7 @@ function renderCollect(cid, aid) {
     F.commit(b, onWriteError);
     rescoreSoon(cid);
     // heading, an empty line, the details, an empty line, thank you
-    const text = [`*${APP_NAME}*`, '', `${c.name} — ${a.name}`,
-      amt > 0 ? `${money(amt)} ${t('received')} (${fmtDate(date)}, ${modeLabel(mode)}${mode === 'scrap' ? ': ' + scrapDetail(doc) : ''}).` : null,
-      disc > 0 ? `${t('Discount')}: ${money(disc)}` : null, `${t('Balance')}: *${money(bal)}*`, '', t('Thank you')].filter((x) => x != null).join('\n');
+    const text = receiptText(c, a, { amount: amt, date, mode, scrap: mode === 'scrap' ? scrapDetail(doc) : '', discount: disc, balance: bal });
     try { sessionStorage.setItem('receipt', JSON.stringify({ aid, customer: c.name, amount: amt, discount: disc, balance: bal, phone: c.phone || '', text, at: Date.now() })); } catch {}
     go(takeCollectBack(aid) || `#/account/${cid}/${aid}`);
   };

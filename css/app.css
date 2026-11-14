@@ -504,3 +504,4 @@ button.tile { font: inherit; cursor: pointer; text-align: inherit; }
 .rvcard .list { margin: 6px 0 0; }
 .rvcard .row { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
 .rvcard .x { background: none; border: 0; color: var(--muted); font-size: 20px; padding: 0 4px; width: auto; }
+.ledger .rsend { display: inline-block; margin-top: 4px; padding: 4px 10px; font-size: 12px; width: auto; }
