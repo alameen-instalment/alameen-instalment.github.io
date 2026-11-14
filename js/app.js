@@ -1083,8 +1083,11 @@ const addMonth = (d) => {
 };
 function nextDueOf(a) {
   if ((a.frequency || 'weekly') !== 'monthly' || a.status === 'closed' || !(a.balance > 0)) return '';
+  // Calendar months: a payment any day of a month covers that month; the next one is due on the 1st of the following month.
   const base = [a.lastPaid || '', a.lastPaidOld || ''].sort().pop();
-  return base ? addMonth(base) : '';
+  if (!base) return '';
+  const [y, m] = base.split('-').map(Number);
+  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
 }
 /** Earliest next due date when every open account of the customer is monthly and not due yet; '' otherwise. */
 /**
